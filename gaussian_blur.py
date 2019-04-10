@@ -24,6 +24,7 @@ def gaussian_blur(
     std: float,
     kernel_size: int = None,
     data_format=None,
+    show_kernel=False,
 ):
     if data_format is None:
         if image.shape[-1] in (1, 3):
@@ -36,36 +37,37 @@ def gaussian_blur(
     image_channels = image.shape[-1 if data_format == "NHWC" else 1]
     
     if kernel_size is None:
-        size = appropriate_kernel_size(std, image_width)
+        size = appropriate_kernel_size(std, image_width.value)
     else:
         size = kernel_size
 
     d = tfp.distributions.Normal(0, std)
     vals = d.prob(tf.range(-(size//2), (size//2)+1, dtype=tf.float32))
     kernel = tf.einsum('i,j->ij', vals, vals)
-    kernel /= tf.reduce_sum(kernel) # normalize the kernel
     
-#     if tf.executing_eagerly():        
-#         import matplotlib.pyplot as plt
-#         from matplotlib import cm
-#         from mpl_toolkits.mplot3d import Axes3D
-#         # Make data.
-#         X = np.arange(0, size, 1)
-#         Y = np.arange(0, size, 1)
-#         X, Y = np.meshgrid(X, Y)
-#         fig = plt.figure()
-#         ax = fig.gca(projection='3d')
-#         ax.plot_surface(X, Y, kernel, cmap=cm.coolwarm,
-#                            linewidth=0, antialiased=False)
+    if tf.executing_eagerly() and show_kernel:
+        import matplotlib.pyplot as plt
+        from matplotlib import cm
+        from mpl_toolkits.mplot3d import Axes3D
+        # Make data.
+        X = np.arange(0, size, 1)
+        Y = np.arange(0, size, 1)
+        X, Y = np.meshgrid(X, Y)
+        fig = plt.figure()
+        ax = fig.gca(projection='3d')
+        ax.plot_surface(X, Y, kernel, cmap=cm.coolwarm, linewidth=0, antialiased=False)
+        plt.show()
+
+    kernel /= tf.reduce_sum(kernel)  # normalize the kernel
 
     # expand dims for conv2d operator
     kernel = kernel[:, :, tf.newaxis, tf.newaxis]
-    kernel = tf.tile(kernel, [1, 1, image_channels, image_channels])
-    
-    return tf.nn.conv2d(
+    kernel = tf.tile(kernel, [1, 1, image_channels, 1])
+
+    return tf.nn.depthwise_conv2d(
         image,
         kernel,
-        strides=1,
+        strides=[1, 1, 1, 1],
         padding="SAME",
         data_format=data_format,
     )
@@ -75,7 +77,7 @@ class GaussianBlur2D(keras.layers.Layer):
     def __init__(
         self,
         std: float,
-        data_format = "channels_first",
+        data_format="channels_first",
         *args,
         **kwargs
     ):
@@ -94,39 +96,3 @@ class GaussianBlur2D(keras.layers.Layer):
             std=self.std,
             #data_format=self.data_format,
         )
-    
-
-class GAN(keras.Model):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        batch_size = 32
-        
-        self.latents = tf.random.uniform([batch_size, 128])
-        
-        self.generator = keras.Sequential([
-            keras.layers.Dense(512, input_shape=[128]),
-            keras.layers.Dense(28*28),
-            keras.layers.Reshape([1, 28, 28]),
-        ])
-        
-        generated_images = self.generator(self.latents)
-        print(generated_images.shape)
-        
-        self.blur_level = tf.Variable(1.0, trainable=False)
-        
-        self.discriminator = keras.Sequential([
-            GaussianBlur2D(self.blur_level),
-            keras.layers.Dense(512, input_shape=[1, 28, 28]),
-            keras.layers.Dense(512),
-            keras.layers.Dense(1),
-        ])
-        
-        outputs = self.discriminator(generated_images)
-        
-        self.add_loss(tf.reduce_sum(outputs**2))
-         
-        
-    def fit(real_images: tf.Tensor, *args, **kwargs):
-        batch_size = real_images.shape[0]
-        labels = tf.ones([batch_size])
-        print(batch_size)
