@@ -7,10 +7,9 @@ import tensorflow.math as math
 from math import pi
 
 print(tf.__version__)
-if tf.__version__[0] == '2':
-    Function = tf.function
-else:
-    Function = tf.contrib.eager.defun
+if tf.__version__[0] != '2':
+    print("Please install tensorflow 2.0!")
+    exit()
 
 
 def maximum_reasonable_std(image_resolution: int) -> float:
@@ -89,7 +88,7 @@ def gaussian_kernel_1d(std, kernel_size):
     return g
 
 
-@Function
+@tf.function
 def gaussian_blur(
     image,
     std: float,
