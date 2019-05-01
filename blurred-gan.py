@@ -4,7 +4,10 @@ import tensorflow_datasets as tfds
 from tensorflow.keras import layers
 import tensorflow.keras
 from typing import Callable
+import numpy as np
 
+import io
+from io import BytesIO
 
 from gaussian_blur import GaussianBlur2D, Function
 
@@ -233,7 +236,64 @@ def celeba_dataset(batch_size=32, shuffle_buffer_size=100) -> tf.data.Dataset:
 
 
 class GenerateSampleGridFigureCallback(tf.keras.callbacks.Callback):
-    pass  # TODO
+    def __init__(self, gan: GAN, log_dir: str, frequency=100):
+        super().__init__()
+        self.gan = gan
+        self.log_dir = log_dir
+        self.frequency = frequency
+        import numpy as np
+        self.latents = tf.random.uniform([64, gan.generator.latent_size]).numpy()
+        self.summary_writer = tf.summary.create_file_writer(log_dir)
+
+    def on_batch_end(self, batch, logs):
+        if batch % self.frequency == 0:
+            self.function()
+
+    def function(self):
+        samples = gan.generate_samples(self.latents, training=False)
+        samples = normalize_images(samples)
+        figure = samples_grid(samples)  # TODO: write figure to a file?
+        image = plot_to_image(figure)
+        with self.summary_writer.as_default():
+            tf.summary.image("samples_grid", image, step=self.gan.step)
+
+@Function
+def normalize_images(images):
+    return (images + 1) / 2
+
+def plot_to_image(figure):
+    """Converts the matplotlib plot specified by 'figure' to a PNG image and
+    returns it. The supplied figure is closed and inaccessible after this call."""
+    
+    # Save the plot to a PNG in memory.
+    buf = io.BytesIO()
+    plt.savefig(buf, format='png')
+    # Closing the figure prevents it from being displayed directly inside
+    # the notebook.
+    plt.close(figure)
+    buf.seek(0)
+    # Convert PNG buffer to TF image
+    image = tf.image.decode_png(buf.getvalue(), channels=4)
+    # Add the batch dimension
+    image = tf.expand_dims(image, 0)
+    return image
+
+
+def samples_grid(samples):
+    """Return a 5x5 grid of the MNIST images as a matplotlib figure."""
+    # Create a figure to contain the plot.
+    figure = plt.figure()
+    for i in range(64):
+        # Start next subplot.
+        plt.subplot(8, 8, i + 1)
+        plt.xticks([])
+        plt.yticks([])
+        plt.grid(False)
+        plt.imshow(samples[i])
+    plt.tight_layout(pad=0)
+    return figure
+
+
 
 
 if __name__ == "__main__":
@@ -251,7 +311,7 @@ if __name__ == "__main__":
     results_dir = "./results"
     checkpoint_dir = results_dir + "/funfun"
     checkpoint_filepath = checkpoint_dir + '/model_{epoch}.h5'
-    
+
     dataset = dataset.map(lambda v: (v, 0))
 
     gan.fit(
@@ -262,7 +322,7 @@ if __name__ == "__main__":
         callbacks=[
             tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath),
             tf.keras.callbacks.TensorBoard(log_dir=checkpoint_dir, update_freq=100),
-            GenerateSampleGridFigureCallback(),
+            GenerateSampleGridFigureCallback(gan=gan, log_dir=checkpoint_dir),
         ]
     )
     exit()
@@ -277,48 +337,3 @@ if __name__ == "__main__":
     manager = tf.train.CheckpointManager(checkpoint, checkpoint_dir, max_to_keep=3)
     checkpoint.restore(manager.latest_checkpoint)
 
-
-    # TODO: make a unique directory for each run if we're hyper-parameter tuning.
-    # tensorboard setup
-    train_log_dir = checkpoint_dir + '/train'
-
-    train_summary_writer = tf.summary.create_file_writer(train_log_dir)
-
-    if manager.latest_checkpoint:
-        print(f"Restored from {manager.latest_checkpoint}")
-    else:
-        print("Initializing from scratch.")
-
-
-    print(f"Starting at step: {int(step.numpy())}")
-    for image_batch in dataset:
-        # number of batches
-        n = int(step / batch_size)
-        k_img = (step / 1000).numpy()
-        
-        message = "n", n, "k_img", k_img, "std:", gan.std
-        
-        # Train the discriminator
-        d_loss = gan.discriminator_step(image_batch)
-        message += "d loss", d_loss
-
-        if n % d_steps_per_g_step == 0:
-            # Train the Generator
-            g_loss = gan.generator_step()
-            message += "G loss:", g_loss
-        
-        tf.print(*message)
-        
-        if n % save_interval == 0:
-            save_path = manager.save()
-            tf.print("Saved checkpoint for step", step, "at path", save_path)
-
-        if n % tick_interval == 0 and n != 0:
-            with train_summary_writer.as_default():
-                for metric in gan.metrics:
-                    tf.summary.scalar(metric.name, metric.result(), step=step)
-                fakes = gan.generate_samples(eval_latents)
-                tf.summary.image("fakes", fakes, step=step)
-        
-        # increment the step.
-        step.assign_add(batch_size)
