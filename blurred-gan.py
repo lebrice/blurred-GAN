@@ -2,6 +2,7 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 import tensorflow_datasets as tfds
 from tensorflow.keras import layers
+import tensorflow.keras
 from typing import Callable
 
 
@@ -111,20 +112,23 @@ class GAN(tf.keras.Model):
         self.gp_coefficient = 10.0
         self.batch_size = None
 
+        self.step = tf.Variable(0, dtype=tf.int64, trainable=False)
+
         self.real_scores = tf.keras.metrics.Mean("real_scores", dtype=tf.float32)
         self.fake_scores = tf.keras.metrics.Mean("fake_scores", dtype=tf.float32)
         self.gp_term = tf.keras.metrics.Mean("gp_term", dtype=tf.float32)
 
-
         self.gen_loss = tf.keras.metrics.Mean("gen_loss", dtype=tf.float32)
         self.disc_loss = tf.keras.metrics.Mean("disc_loss", dtype=tf.float32)
+
+        self.d_steps_per_g_step = 5
 
     def latents_batch(self):
         assert self.batch_size is not None
         return tf.random.uniform([self.batch_size, self.generator.latent_size])
 
-    def generate_samples(self, latent_vector=None, training=False):
-        if latent_vector is None:
+    def generate_samples(self, latents=None, training=False):
+        if latents is None:
             latents = self.latents_batch()
         return self.generator(latents, training=training)
 
@@ -143,7 +147,7 @@ class GAN(tf.keras.Model):
         gp_term = self.gp_coefficient * tf.reduce_mean((norm - 1.)**2)
         return gp_term
 
-    # @Function
+    @Function
     def discriminator_step(self, reals):
         self.batch_size = reals.shape[0]
         with tf.GradientTape() as disc_tape:
@@ -159,18 +163,22 @@ class GAN(tf.keras.Model):
         self.gp_term(gp_term)
         self.disc_loss(disc_loss)
 
+        # TODO: figure out how to use image summaries.
+        # tf.summary.image("fakes", fakes, step=self.step)
+        # tf.summary.image("reals", reals, step=self.step)
+
         discriminator_grads = disc_tape.gradient(disc_loss, self.discriminator.trainable_variables)
         self.discriminator_optimizer.apply_gradients(zip(discriminator_grads, self.discriminator.trainable_variables))
-        
+
         return disc_loss
-    
-    # @Function
+
+    @Function
     def generator_step(self):
         with tf.GradientTape() as gen_tape:
             fakes = self.generate_samples(training=True)
             fake_scores = self.discriminator(fakes, training=False)
             gen_loss = tf.reduce_mean(fake_scores)
-        
+
         # save metrics.
         self.fake_scores(fake_scores)
         self.gen_loss(gen_loss)
@@ -179,8 +187,16 @@ class GAN(tf.keras.Model):
         self.generator_optimizer.apply_gradients(zip(generator_grads, self.generator.trainable_variables))
         return gen_loss
 
+    @Function
+    def train_on_batch(self, x, y=None, sample_weight=None, class_weight=None, reset_metrics=True):
+        batch_size = x.shape[0]
+        self.discriminator_step(x)
+        self.step.assign_add(batch_size)
+        if tf.equal((self.step / batch_size) % self.d_steps_per_g_step, 0):
+            self.generator_step()
+        return [metric.result() for metric in self.metrics]
 
-def celeba_dataset(batch_size=32, epochs=None, shuffle_buffer_size=100) -> tf.data.Dataset:
+def celeba_dataset(batch_size=32, shuffle_buffer_size=100) -> tf.data.Dataset:
     """Modern Tensorflow input pipeline for the CelebA dataset"""
 
     @Function
@@ -207,13 +223,17 @@ def celeba_dataset(batch_size=32, epochs=None, shuffle_buffer_size=100) -> tf.da
               .map(take_image)
               .batch(16)
               .map(preprocess_images)
+            #   .cache("./cache")
               .apply(tf.data.experimental.unbatch())
               .shuffle(shuffle_buffer_size)
-              .batch(batch_size)
               .prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
-              .repeat(epochs)
+              .batch(batch_size)
               )
     return celeba
+
+
+class GenerateSampleGridFigureCallback(tf.keras.callbacks.Callback):
+    pass  # TODO
 
 
 if __name__ == "__main__":
@@ -222,32 +242,46 @@ if __name__ == "__main__":
     import datetime
     gan = GAN()
 
-    EPOCHS = 10
+    epochs = 10
     batch_size = 16
     d_steps_per_g_step = 3
-    save_interval = 50
-
-    # interval at which tensorboard summaries should be saved
-    tick_interval = 100
 
     dataset = celeba_dataset(batch_size=batch_size)
 
     results_dir = "./results"
-    checkpoint_dir = results_dir + "/testrun"
+    checkpoint_dir = results_dir + "/funfun"
+    checkpoint_filepath = checkpoint_dir + '/model_{epoch}.h5'
+    
+    dataset = dataset.map(lambda v: (v, 0))
 
-    # number of batches. TODO: change to number of examples seen. 
-    step = tf.Variable(1)
+    gan.fit(
+        x=dataset,
+        y=None,
+        epochs=1,
+        steps_per_epoch=202_599 // batch_size,
+        callbacks=[
+            tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath),
+            tf.keras.callbacks.TensorBoard(log_dir=checkpoint_dir, update_freq=100),
+            GenerateSampleGridFigureCallback(),
+        ]
+    )
+    exit()
+
+    # Total number of training images seen. Used as the global step.
+    step = tf.Variable(0, dtype=tf.int64)
 
     eval_latents = tf.random.uniform([8, gan.generator.latent_size], seed=123)
 
     # checkpoint setup
-    checkpoint = tf.train.Checkpoint(step=step, gan=gan)
+    checkpoint = tf.train.Checkpoint(gan=gan, step=step)
     manager = tf.train.CheckpointManager(checkpoint, checkpoint_dir, max_to_keep=3)
     checkpoint.restore(manager.latest_checkpoint)
 
+
+    # TODO: make a unique directory for each run if we're hyper-parameter tuning.
     # tensorboard setup
-    current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    train_log_dir = checkpoint_dir + '/logs/gradient_tape/' + current_time + '/train'
+    train_log_dir = checkpoint_dir + '/train'
+
     train_summary_writer = tf.summary.create_file_writer(train_log_dir)
 
     if manager.latest_checkpoint:
@@ -255,32 +289,36 @@ if __name__ == "__main__":
     else:
         print("Initializing from scratch.")
 
+
     print(f"Starting at step: {int(step.numpy())}")
     for image_batch in dataset:
-        _step = int(step.numpy())
-
-        message = f"step: {_step}, std: {gan.std.numpy()}"
+        # number of batches
+        n = int(step / batch_size)
+        k_img = (step / 1000).numpy()
+        
+        message = "n", n, "k_img", k_img, "std:", gan.std
+        
         # Train the discriminator
         d_loss = gan.discriminator_step(image_batch)
+        message += "d loss", d_loss
 
-        message += f"\t d loss: {d_loss.numpy()}"
-        if _step % d_steps_per_g_step == 0:
+        if n % d_steps_per_g_step == 0:
             # Train the Generator
             g_loss = gan.generator_step()
-            message += f"\t G loss: {g_loss.numpy()}"
+            message += "G loss:", g_loss
         
-        print(message)
-
-        if _step % save_interval == 0:
+        tf.print(*message)
+        
+        if n % save_interval == 0:
             save_path = manager.save()
-            print(f"Saved checkpoint for step {step}: {save_path}")
+            tf.print("Saved checkpoint for step", step, "at path", save_path)
 
-        if _step % tick_interval == 0:
+        if n % tick_interval == 0 and n != 0:
             with train_summary_writer.as_default():
                 for metric in gan.metrics:
-                    tf.summary.scalar(metric.name, metric.result(), step=_step)
+                    tf.summary.scalar(metric.name, metric.result(), step=step)
                 fakes = gan.generate_samples(eval_latents)
-                tf.summary.image("fakes", fakes)
+                tf.summary.image("fakes", fakes, step=step)
         
         # increment the step.
-        step.assign_add(1)
+        step.assign_add(batch_size)
