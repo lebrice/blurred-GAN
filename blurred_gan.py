@@ -8,7 +8,7 @@ import numpy as np
 import io
 from io import BytesIO
 
-from gaussian_blur import GaussianBlur2D
+from gaussian_blur import GaussianBlur2D, AdaptiveBlurController
 
 import callbacks
 from datasets import celeba_dataset
@@ -87,17 +87,25 @@ class Discriminator(tf.keras.Sequential):
         self.add(layers.Dropout(0.3))
 
         self.add(layers.Flatten())
-        self.add(layers.Dense(1))
+        self.add(layers.Dense(1, activation="linear"))
 
 
 class DiscriminatorWithBlur(Discriminator):
-    def __init__(self, blur_std: float, *args, **kwargs):
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.blur_std = blur_std
-        self.blurring_layer = GaussianBlur2D(self.blur_std)
+        self.blurring_layer = GaussianBlur2D()
+
+    @property
+    def std(self):
+        return self.blurring_layer.std
+
+    @std.setter
+    def std(self, value):
+        self.blurring_layer.std = value
 
     def call(self, x: tf.Tensor, training=False):
-        self.blurring_layer.std = self.blur_std
+        # TODO: not sure if I need to do this.
+        self.blurring_layer.std = self.std
         x = self.blurring_layer(x)
         return super().call(x, training=training)
 
@@ -108,8 +116,7 @@ class GAN(tf.keras.Model):
         self.generator = Generator()
         self.generator_optimizer = tf.keras.optimizers.Adam()
 
-        self.std = tf.Variable(1.0, name="blur_std", trainable=False)
-        self.discriminator = DiscriminatorWithBlur(self.std)
+        self.discriminator = DiscriminatorWithBlur()
         self.discriminator_optimizer = tf.keras.optimizers.Adam()
 
         self.gp_coefficient = 10.0
@@ -124,7 +131,16 @@ class GAN(tf.keras.Model):
         self.gen_loss = tf.keras.metrics.Mean("gen_loss", dtype=tf.float32)
         self.disc_loss = tf.keras.metrics.Mean("disc_loss", dtype=tf.float32)
 
+        self.std_metric = tf.keras.metrics.Mean("std", dtype=tf.float32)
         self.d_steps_per_g_step = d_steps_per_g_step
+
+    @property
+    def std(self):
+        return self.discriminator.std
+
+    @std.setter
+    def std(self, value):
+        self.discriminator.std = value
 
     def latents_batch(self):
         assert self.batch_size is not None
@@ -158,13 +174,18 @@ class GAN(tf.keras.Model):
             fake_scores = self.discriminator(fakes, training=True)
             real_scores = self.discriminator(reals, training=True)
             gp_term = self.gradient_penalty(reals, fakes)
-            disc_loss = tf.reduce_mean(fake_scores - real_scores) + gp_term
+
+            disc_loss = (fake_scores - real_scores) + gp_term
+
+            norm_term = (tf.norm(fake_scores) + tf.norm(real_scores))
+            disc_loss += 1e-2 * norm_term
 
         # save metrics.
         self.fake_scores(fake_scores)
         self.real_scores(real_scores)
         self.gp_term(gp_term)
         self.disc_loss(disc_loss)
+        self.std_metric(self.std)
 
         with tf.device("cpu"):
             pass
@@ -202,7 +223,6 @@ class GAN(tf.keras.Model):
         return [metric.result() for metric in self.metrics]
 
 
-
 if __name__ == "__main__":
     import os
     import matplotlib.pyplot as plt
@@ -229,5 +249,6 @@ if __name__ == "__main__":
             tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath),
             tf.keras.callbacks.TensorBoard(log_dir=checkpoint_dir, update_freq=100),
             callbacks.GenerateSampleGridFigureCallback(log_dir=checkpoint_dir),
+            AdaptiveBlurController(),
         ]
     )
