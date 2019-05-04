@@ -143,35 +143,31 @@ class GaussianBlur2D(keras.layers.Layer):
 
 
 class AdaptiveBlurController(keras.callbacks.Callback):
-    def __init__(self, threshold=1.0, smoothing=0.9, max_value=23.8, min_value=0.01):
+    def __init__(self, threshold=-1.0, smoothing=0.9, max_value=23.8, min_value=0.01):
         super().__init__()
 
         self.threshold = threshold
         self.p = smoothing
 
-        self.old = 2 * self.threshold
+        self.value = 2 * self.threshold
 
         self._blur_std = max_value
         self.min_value = min_value
 
-    def moving_average(self, new):
+    def update_value(self, new_value):
         """
         Exponential moving average
         """
-        return self.p * self.old + (1-self.p) * new
+        return self.p * self.value + (1-self.p) * new_value
 
     def on_batch_end(self, batch, logs):
-        new_score = logs["fake_scores"]
-        batch_size = logs["size"]
-        value = self.moving_average(new_score / batch_size)
-
-        if value < self.threshold and batch > 100:
-            # print("\nblur std", self.blur_std, value, self.threshold)
+        self.update_value(logs["fake_scores"])
+        if self.threshold <= self.value <= 0:
+            # print("\nProblem is too easy. reducing the blur std:", self.blur_std, self.value)
             self.blur_std = 0.99 * self.blur_std
 
-            self.model.stop_training = True
-
         if self.blur_std < self.min_value:
+            print("Reached the minimum STD. Training is complete.")
             self.model.stop_training = True
 
         tf.summary.scalar("blur_std", self.blur_std)
