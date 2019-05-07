@@ -8,7 +8,7 @@ import numpy as np
 import io
 from io import BytesIO
 
-from gaussian_blur import GaussianBlur2D, AdaptiveBlurController
+from gaussian_blur import GaussianBlur2D
 
 import callbacks
 from datasets import celeba_dataset
@@ -110,8 +110,11 @@ class DiscriminatorWithBlur(Discriminator):
         return super().call(x, training=training)
 
 
-class GAN(tf.keras.Model):
-    def __init__(self, d_steps_per_g_step=5, *args, **kwargs):
+class BlurredGAN(tf.keras.Model):
+    def __init__(self, d_steps_per_g_step=1, *args, **kwargs):
+        """
+        TODO: add arguments for the generator and discriminator constructors.
+        """
         super().__init__(*args, **kwargs)
         self.generator = Generator()
         self.generator_optimizer = tf.keras.optimizers.Adam()
@@ -124,14 +127,15 @@ class GAN(tf.keras.Model):
 
         self.step = tf.Variable(0, dtype=tf.int64, trainable=False)
         
+        # Keras metrics to be showed during training.
         self.real_scores = tf.keras.metrics.Mean("real_scores", dtype=tf.float32)
         self.fake_scores = tf.keras.metrics.Mean("fake_scores", dtype=tf.float32)
         self.gp_term = tf.keras.metrics.Mean("gp_term", dtype=tf.float32)
-
         self.gen_loss = tf.keras.metrics.Mean("gen_loss", dtype=tf.float32)
         self.disc_loss = tf.keras.metrics.Mean("disc_loss", dtype=tf.float32)
-
         self.std_metric = tf.keras.metrics.Mean("std", dtype=tf.float32)
+
+        # number of discriminator steps per generator step.
         self.d_steps_per_g_step = d_steps_per_g_step
 
     @property
@@ -223,6 +227,49 @@ class GAN(tf.keras.Model):
         return [metric.result() for metric in self.metrics]
 
 
+class AdaptiveBlurController(tf.keras.callbacks.Callback):
+    """
+    Controller which adaptively reduces the amount of blurring used during
+    training. To be used with the `BlurredGAN` keras model.
+
+    An exponential moving average (with coefficient `p`) of the scores given
+    to fake samples by the discriminator is kept during training.
+    while this moving average falls within the interval [`threshold`, 0], the
+    standard deviation is reduced by a factor of `smoothing` (defaults to 0.95)
+    
+    Once the standard deviation reaches a value equal to `min_value`, the
+    training stops.
+    """
+    def __init__(self, threshold=-1.0, p=0.9, smoothing=0.95, max_value=23.8, min_value=0.01):
+        super().__init__()
+
+        self.threshold = threshold
+        self.smoothing = smoothing
+        self.p = p
+
+        # start with a very negative initial value.
+        self.value = 10 * self.threshold
+
+        # TODO: Fix this bug. self.model is None.
+        self.model.std = max_value
+        self.min_value = min_value
+
+    def on_batch_end(self, batch, logs):
+        # to be used with a BlurredGAN model.
+        # assert isinstance(self.model, BlurredGAN), self.model
+        new_value = logs["fake_scores"]
+        self.value = self.p * self.value + (1 - self.p) * new_value
+        if self.threshold <= self.value <= 0:
+            # print("\nProblem is too easy. reducing the blur std:", self.blur_std, self.value)
+            self.model.std = self.smoothing * self.model.std
+
+        if self.model.std < self.min_value:
+            print("Reached the minimum STD. Training is complete.")
+            self.model.stop_training = True
+
+        tf.summary.scalar("blur_std", self.blur_std)
+    
+
 if __name__ == "__main__":
     import os
     import matplotlib.pyplot as plt
@@ -230,7 +277,7 @@ if __name__ == "__main__":
 
     epochs = 10
     batch_size = 16
-    gan = GAN(d_steps_per_g_step=3)
+    gan = BlurredGAN(d_steps_per_g_step=3)
 
     dataset = celeba_dataset(batch_size=batch_size)
 

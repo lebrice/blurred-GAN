@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import io
 from io import BytesIO
-from blurred_gan import GAN
+from blurred_gan import BlurredGAN
 
 
 class GenerateSampleGridFigureCallback(tf.keras.callbacks.Callback):
