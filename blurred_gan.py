@@ -1,126 +1,26 @@
 import tensorflow as tf
 import matplotlib.pyplot as plt
-import tensorflow_datasets as tfds
-from tensorflow.keras import layers
 from typing import Callable
-import numpy as np
-
-import io
-from io import BytesIO
 
 from gaussian_blur import GaussianBlur2D
 
-import callbacks
-from datasets import celeba_dataset
-
-
-class Generator(tf.keras.Sequential):
-    def __init__(self, latent_size=100, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.latent_size = latent_size
-        self.add(layers.Dense(4*4*512, use_bias=False, input_shape=(self.latent_size,)))
-        self.add(layers.BatchNormalization())
-        self.add(layers.LeakyReLU())
-
-        self.add(layers.Reshape((4, 4, 512)))
-        assert self.output_shape == (None, 4, 4, 512) # Note: None is the batch size
-
-        self.add(layers.Conv2DTranspose(512, (5, 5), strides=(1, 1), padding='same', use_bias=False))
-        assert self.output_shape == (None, 4, 4, 512), self.output_shape
-        self.add(layers.BatchNormalization())
-        self.add(layers.LeakyReLU())
-
-        self.add(layers.Conv2DTranspose(256, (5, 5), strides=(2, 2), padding='same', use_bias=False))
-        assert self.output_shape == (None, 8, 8, 256), self.output_shape
-        self.add(layers.BatchNormalization())
-        self.add(layers.LeakyReLU())
-
-        self.add(layers.Conv2DTranspose(128, (5, 5), strides=(2, 2), padding='same', use_bias=False))
-        assert self.output_shape == (None, 16, 16, 128), self.output_shape
-        self.add(layers.BatchNormalization())
-        self.add(layers.LeakyReLU())
-
-        self.add(layers.Conv2DTranspose(64, (5, 5), strides=(2, 2), padding='same', use_bias=False))
-        assert self.output_shape == (None, 32, 32, 64), self.output_shape
-        self.add(layers.BatchNormalization())
-        self.add(layers.LeakyReLU())
-
-        self.add(layers.Conv2DTranspose(32, (5, 5), strides=(2, 2), padding='same', use_bias=False))
-        assert self.output_shape == (None, 64, 64, 32), self.output_shape
-        self.add(layers.BatchNormalization())
-        self.add(layers.LeakyReLU())
-
-        self.add(layers.Conv2DTranspose(16, (5, 5), strides=(2, 2), padding='same', use_bias=False))
-        assert self.output_shape == (None, 128, 128, 16), self.output_shape
-        self.add(layers.BatchNormalization())
-        self.add(layers.LeakyReLU())
-
-        self.add(layers.Conv2D(3, (5, 5), padding='same', use_bias=False, activation='tanh'))
-        assert self.output_shape == (None, 128, 128, 3), self.output_shape
-
-
-class Discriminator(tf.keras.Sequential):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.add(layers.Conv2D(16, 5, strides=2, padding='same', input_shape=[128, 128, 3]))
-        self.add(layers.LeakyReLU())
-        self.add(layers.Dropout(0.3))
-
-        self.add(layers.Conv2D(32, 5, strides=2, padding='same'))
-        self.add(layers.LeakyReLU())
-        self.add(layers.Dropout(0.3))
-
-        self.add(layers.Conv2D(64, 5, strides=2, padding='same'))
-        self.add(layers.LeakyReLU())
-        self.add(layers.Dropout(0.3))
-
-        self.add(layers.Conv2D(128, 5, strides=2, padding='same'))
-        self.add(layers.LeakyReLU())
-        self.add(layers.Dropout(0.3))
-
-        self.add(layers.Conv2D(256, 5, strides=2, padding='same'))
-        self.add(layers.LeakyReLU())
-        self.add(layers.Dropout(0.3))
-
-        self.add(layers.Conv2D(512, 5, strides=2, padding='same'))
-        self.add(layers.LeakyReLU())
-        self.add(layers.Dropout(0.3))
-
-        self.add(layers.Flatten())
-        self.add(layers.Dense(1, activation="linear"))
-
-
-class DiscriminatorWithBlur(Discriminator):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.blurring_layer = GaussianBlur2D()
-
-    @property
-    def std(self):
-        return self.blurring_layer.std
-
-    @std.setter
-    def std(self, value):
-        self.blurring_layer.std = value
-
-    def call(self, x: tf.Tensor, training=False):
-        # TODO: not sure if I need to do this.
-        self.blurring_layer.std = self.std
-        x = self.blurring_layer(x)
-        return super().call(x, training=training)
-
 
 class BlurredGAN(tf.keras.Model):
-    def __init__(self, d_steps_per_g_step=1, *args, **kwargs):
+    """
+    Simple GAN model, which applies gaussian blur to the inputs of the discriminator.
+    """
+    def __init__(self, generator, discriminator, d_steps_per_g_step=1, *args, **kwargs):
         """
         TODO: add arguments for the generator and discriminator constructors.
         """
         super().__init__(*args, **kwargs)
-        self.generator = Generator()
+        self.generator = generator
         self.generator_optimizer = tf.keras.optimizers.Adam()
 
-        self.discriminator = DiscriminatorWithBlur()
+        self.discriminator = discriminator
         self.discriminator_optimizer = tf.keras.optimizers.Adam()
+
+        self.blur = GaussianBlur2D()
 
         self.gp_coefficient = 10.0
         self.batch_size = None
@@ -140,11 +40,11 @@ class BlurredGAN(tf.keras.Model):
 
     @property
     def std(self):
-        return self.discriminator.std
+        return self.blur.std
 
     @std.setter
     def std(self, value):
-        self.discriminator.std = value
+        self.blur.std = value
 
     def latents_batch(self):
         assert self.batch_size is not None
@@ -175,14 +75,19 @@ class BlurredGAN(tf.keras.Model):
         self.batch_size = reals.shape[0]
         with tf.GradientTape() as disc_tape:
             fakes = self.generate_samples(training=False)
-            fake_scores = self.discriminator(fakes, training=True)
-            real_scores = self.discriminator(reals, training=True)
-            gp_term = self.gradient_penalty(reals, fakes)
 
+            blurred_fakes = self.blur(fakes)
+            blurred_reals = self.blur(reals)
+
+            fake_scores = self.discriminator(blurred_fakes, training=True)
+            real_scores = self.discriminator(blurred_reals, training=True)
+
+            gp_term = self.gradient_penalty(blurred_reals, blurred_fakes)
             disc_loss = (fake_scores - real_scores) + gp_term
 
-            norm_term = (tf.norm(fake_scores) + tf.norm(real_scores))
-            disc_loss += 1e-2 * norm_term
+            norm_term = (tf.norm(fake_scores, axis=-1) + tf.norm(real_scores, axis=-1))
+            e_drift = 1e-4
+            disc_loss += 1e-3 * norm_term
 
         # save metrics.
         self.fake_scores(fake_scores)
@@ -191,11 +96,10 @@ class BlurredGAN(tf.keras.Model):
         self.disc_loss(disc_loss)
         self.std_metric(self.std)
 
-        with tf.device("cpu"):
-            pass
-            # TODO: figure out how to use image summaries.
-            # tf.summary.image("fakes", fakes, step=self.step)
-            # tf.summary.image("reals", reals, step=self.step)
+        # with tf.device("cpu"):
+        #     # TODO: figure out how to use image summaries.
+            # tf.summary.image("fakes", fakes, step=self.step.numpy())
+            # tf.summary.image("reals", reals, step=self.step.numpy())
 
         discriminator_grads = disc_tape.gradient(disc_loss, self.discriminator.trainable_variables)
         self.discriminator_optimizer.apply_gradients(zip(discriminator_grads, self.discriminator.trainable_variables))
@@ -217,10 +121,10 @@ class BlurredGAN(tf.keras.Model):
         self.generator_optimizer.apply_gradients(zip(generator_grads, self.generator.trainable_variables))
         return gen_loss
 
-    @tf.function
-    def train_on_batch(self, x, y=None, sample_weight=None, class_weight=None, reset_metrics=True):
+    def train_on_batch(self, x, *args, **kwargs):
         batch_size = x.shape[0]
-        self.discriminator_step(x)
+        reals = x
+        self.discriminator_step(reals)
         self.step.assign_add(batch_size)
         if tf.equal((self.step / batch_size) % self.d_steps_per_g_step, 0):
             self.generator_step()
@@ -251,7 +155,7 @@ class AdaptiveBlurController(tf.keras.callbacks.Callback):
         self.value = 10 * self.threshold
 
         # TODO: Fix this bug. self.model is None.
-        self.model.std = max_value
+        self.std = max_value
         self.min_value = min_value
 
     def on_batch_end(self, batch, logs):
@@ -261,41 +165,11 @@ class AdaptiveBlurController(tf.keras.callbacks.Callback):
         self.value = self.p * self.value + (1 - self.p) * new_value
         if self.threshold <= self.value <= 0:
             # print("\nProblem is too easy. reducing the blur std:", self.blur_std, self.value)
-            self.model.std = self.smoothing * self.model.std
+            self.std = self.smoothing * self.std
+            self.model.std = self.std
 
-        if self.model.std < self.min_value:
+        if self.std < self.min_value:
             print("Reached the minimum STD. Training is complete.")
             self.model.stop_training = True
 
-        tf.summary.scalar("blur_std", self.blur_std)
-    
-
-if __name__ == "__main__":
-    import os
-    import matplotlib.pyplot as plt
-    import datetime
-
-    epochs = 10
-    batch_size = 16
-    gan = BlurredGAN(d_steps_per_g_step=3)
-
-    dataset = celeba_dataset(batch_size=batch_size)
-
-    results_dir = "./results"
-    checkpoint_dir = results_dir + "/funfun"
-    checkpoint_filepath = checkpoint_dir + '/model_{epoch}.h5'
-
-    dataset = dataset.map(lambda v: (v, 0))
-
-    gan.fit(
-        x=dataset,
-        y=None,
-        epochs=1,
-        steps_per_epoch=202_599 // batch_size,
-        callbacks=[
-            tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath),
-            tf.keras.callbacks.TensorBoard(log_dir=checkpoint_dir, update_freq=100),
-            callbacks.GenerateSampleGridFigureCallback(log_dir=checkpoint_dir),
-            AdaptiveBlurController(),
-        ]
-    )
+        tf.summary.scalar("blur_std", self.std)
