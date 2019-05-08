@@ -5,6 +5,8 @@ from tensorflow.keras import layers
 import blurred_gan
 from blurred_gan import BlurredGAN, AdaptiveBlurController
 
+import utils
+
 
 def celeba_dataset(shuffle_buffer_size=100) -> tf.data.Dataset:
     """Modern Tensorflow input pipeline for the CelebA dataset"""
@@ -128,13 +130,13 @@ if __name__ == "__main__":
     gen = Generator()
     disc = Discriminator()
 
-    gan = BlurredGAN(gen, disc, d_steps_per_g_step=1)
+    log_dir = utils.create_result_subdir("results", "celeba")
+    gan = BlurredGAN(gen, disc, log_dir=log_dir, d_steps_per_g_step=5)
 
     dataset = celeba_dataset().batch(batch_size)
 
-    results_dir = "./results"
-    checkpoint_dir = results_dir + "/funfun"
-    checkpoint_filepath = checkpoint_dir + '/model_{epoch}.h5'
+
+    checkpoint_filepath = log_dir + '/model_{epoch}.h5'
 
     # we add a useless 'label' for the fit method to work.
     dataset = dataset.map(lambda v: (v, 0))
@@ -146,8 +148,8 @@ if __name__ == "__main__":
         steps_per_epoch=202_599 // batch_size,
         callbacks=[
             tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath),
-            tf.keras.callbacks.TensorBoard(log_dir=checkpoint_dir, update_freq=100),
-            # callbacks.GenerateSampleGridFigureCallback(log_dir=checkpoint_dir),
+            tf.keras.callbacks.TensorBoard(log_dir=log_dir, update_freq=100),
+            utils.GenerateSampleGridFigureCallback(log_dir=log_dir, period=100),
             AdaptiveBlurController(),
         ]
     )

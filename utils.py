@@ -6,12 +6,25 @@ from io import BytesIO
 from blurred_gan import BlurredGAN
 
 
+def create_result_subdir(result_dir: str, run_name: str) -> str:
+    import glob
+    from itertools import count
+    import os
+    paths = glob.glob(os.path.join(result_dir, f"*-{run_name}"))
+    run_ids = map(lambda p: int(os.path.basename(p).split("-")[0]), paths)
+    run_id = max(run_ids, default=0) + 1
+    path = os.path.join(result_dir, f"{run_id:02d}-{run_name}")
+    print(f"Creating result subdir at '{path}'")
+    os.makedirs(path)
+    return path
+
+
 class GenerateSampleGridFigureCallback(tf.keras.callbacks.Callback):
-    def __init__(self, log_dir: str, frequency=100):
+    def __init__(self, log_dir: str, show_blurred_samples=True, period=100):
         super().__init__()
         self.log_dir = log_dir
-        self.frequency = frequency
-        
+        self.period = period
+        self.show_blurred_samples = show_blurred_samples
         # provide type-hinting for the model class.
         # self.model: GAN = self.model
         # TODO: need a constant, random vector.
@@ -19,17 +32,20 @@ class GenerateSampleGridFigureCallback(tf.keras.callbacks.Callback):
         self.summary_writer = tf.summary.create_file_writer(log_dir)
 
     def on_batch_end(self, batch, logs):
-        if batch % self.frequency == 0:
+        if batch % self.period == 0:
             self.function(step=batch)
 
     def function(self, step):
         samples = self.model.generate_samples(self.latents, training=False)
+        if self.show_blurred_samples:
+            samples = self.model.blur(samples)
+
         samples = normalize_images(samples)
         figure = samples_grid(samples)  # TODO: write figure to a file?
         image = plot_to_image(figure)
         with self.summary_writer.as_default():
             tf.summary.image("samples_grid", image, step=step)
-        
+
 
 @tf.function
 def normalize_images(images):
