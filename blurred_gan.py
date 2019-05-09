@@ -1,7 +1,7 @@
 import tensorflow as tf
 import matplotlib.pyplot as plt
 from typing import Callable
-
+from enum import Enum
 from gaussian_blur import GaussianBlur2D
 
 
@@ -77,10 +77,10 @@ class BlurredGAN(tf.keras.Model):
         with tf.GradientTape() as disc_tape:
             fakes = self.generate_samples(training=False)
 
-            blurred_fakes = fakes
-            blurred_reals = reals
-            # blurred_fakes = self.blur(fakes)
-            # blurred_reals = self.blur(reals)
+            # blurred_fakes = fakes
+            # blurred_reals = reals
+            blurred_fakes = self.blur(fakes)
+            blurred_reals = self.blur(reals)
 
             fake_scores = self.discriminator(blurred_fakes, training=True)
             real_scores = self.discriminator(blurred_reals, training=True)
@@ -118,8 +118,8 @@ class BlurredGAN(tf.keras.Model):
     def generator_step(self):
         with tf.GradientTape() as gen_tape:
             fakes = self.generate_samples(training=True)
-            blurred_fakes = fakes
-            # blurred_fakes = self.blur(fakes)
+            # blurred_fakes = fakes
+            blurred_fakes = self.blur(fakes)
             fake_scores = self.discriminator(blurred_fakes, training=False)
             gen_loss = - tf.reduce_mean(fake_scores)
 
@@ -148,6 +148,24 @@ class BlurredGAN(tf.keras.Model):
         self.n_batches.assign_add(1)
 
         return [metric.result() for metric in self.metrics]
+
+
+class FixedBlurController(tf.keras.callbacks.Callback):
+    def __init__(self, schedule_type: str, training_n_steps: int,  max_value: float, min_value=0.01):
+        self.initial_std = max_value
+
+        # if schedule_type == "exponential_decay":
+        self.schedule = tf.keras.optimizers.schedules.ExponentialDecay(
+            self.initial_std,
+            decay_steps=training_n_steps,
+            decay_rate=0.96,
+            staircase=False,
+        )
+
+    def on_batch_begin(self, batch, logs):
+        value = self.schedule(self.model.n_img)
+        # print("value:", value)
+        self.model.std.assign(value)
 
 
 class AdaptiveBlurController(tf.keras.callbacks.Callback):
@@ -180,13 +198,16 @@ class AdaptiveBlurController(tf.keras.callbacks.Callback):
     def on_batch_end(self, batch, logs):
         # to be used with a BlurredGAN model.
         # assert isinstance(self.model, BlurredGAN), self.model
+        if batch < self.warmup_n_batches:
+            return
+
         fake_scores = logs["fake_scores"]
         real_scores = logs["real_scores"]
         ratio = fake_scores / (real_scores + fake_scores)
-        # print("ratio", ratio)
+        tf.summary.scalar("ratio", ratio)
         self.value = self.p * self.value + (1 - self.p) * ratio
 
-        if 0.45 <= self.value <= 0.55 and batch > self.warmup_n_batches:
+        if 0.48 <= self.value <= 0.52 and batch > self.warmup_n_batches:
             # print("\nProblem is too easy. reducing the blur std:", self.blur_std, self.value)
             self.std = self.smoothing * self.std
             self.model.std.assign(self.std)
@@ -194,5 +215,3 @@ class AdaptiveBlurController(tf.keras.callbacks.Callback):
         if self.std < self.min_value:
             print("Reached the minimum STD. Training is complete.")
             self.model.stop_training = True
-
-        tf.summary.scalar("ratio", ratio)

@@ -3,7 +3,7 @@ import tensorflow_datasets as tfds
 from tensorflow.keras import layers
 
 import blurred_gan
-from blurred_gan import BlurredGAN, AdaptiveBlurController
+from blurred_gan import BlurredGAN, AdaptiveBlurController, FixedBlurController
 
 import utils
 
@@ -100,27 +100,30 @@ if __name__ == "__main__":
     epochs = 10
     batch_size = 256
 
-    gen = Generator()
-    disc = Discriminator()
 
-    log_dir = utils.create_result_subdir("results", "mnist")
-
-    gan = BlurredGAN(gen, disc, log_dir=log_dir, d_steps_per_g_step=1)
-    dataset = dataset().batch(batch_size)
-
-    checkpoint_filepath = log_dir + '/model_{epoch}.h5'
 
     # we add a useless 'label' for the fit method to work.
-    dataset = dataset.map(lambda v: (v, 0)).repeat()
+    dataset = dataset().batch(batch_size).map(lambda v: (v, 0)).repeat()
 
     from gaussian_blur import maximum_reasonable_std
 
-    path = utils.locate_model_file("results", "mnist")
-    initial_epoch = None
-    if path is not None:
-        print(f"Loading weights from '{path}'")
-        gan.load_weights(path)
-        initial_epoch = utils.epoch(path)
+    # path = utils.locate_model_file("results", "mnist")
+    # if path is not None:
+    #     print(f"Loading weights from '{path}'")
+    #     log_dir = "/".join(path.split("/")[:-1])
+
+    #     gan = tf.keras.models.load_model(path)
+    #     initial_epoch = utils.epoch(path)
+    # else:
+
+    print("Starting from scratch.")
+    log_dir = utils.create_result_subdir("results", "mnist")
+    gen = Generator()
+    disc = Discriminator()
+    gan = BlurredGAN(gen, disc, log_dir=log_dir, d_steps_per_g_step=1)
+    initial_epoch = 0
+
+    checkpoint_filepath = os.path.join(log_dir, "model_{epoch}.h5")
 
     gan.fit(
         x=dataset,
@@ -129,12 +132,16 @@ if __name__ == "__main__":
         initial_epoch=initial_epoch,
         steps_per_epoch=60_000 // batch_size,
         callbacks=[
-            tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath),
+            tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath, save_weights_only=False),
             tf.keras.callbacks.TensorBoard(log_dir=log_dir, update_freq=100),
-            # utils.GenerateSampleGridFigureCallback(log_dir=checkpoint_dir, period=100),
+            # utils.GenerateSampleGridFigureCallback(log_dir=log_dir, period=60_000 / 2 // batch_size),
             # AdaptiveBlurController(max_value=maximum_reasonable_std(image_resolution=28)),
+            FixedBlurController(schedule_type="exponential_decay", training_n_steps=50*60_000, max_value=maximum_reasonable_std(image_resolution=28)),
         ],
     )
+
+    
+
 
     samples = gan.generate_samples()
     import numpy as np

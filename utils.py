@@ -106,9 +106,9 @@ def samples_grid(samples):
         plt.yticks([])
         plt.grid(False)
         x = samples[i]
-        if len(x.shape) == 2:
-            x = np.reshape(x, [*x.shape, 1])
-        plt.imshow()
+        if x.shape[-1] == 1:
+            x = np.reshape(x, [*x.shape[:-1]])
+        plt.imshow(x)
     plt.tight_layout(pad=0)
     return figure
 
