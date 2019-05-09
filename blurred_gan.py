@@ -9,7 +9,7 @@ class BlurredGAN(tf.keras.Model):
     """
     example of a GAN model, where gaussian blurring is applied to the inputs of the discriminator to stabilize training.
     """
-    def __init__(self, generator, discriminator, log_dir="results/train", d_steps_per_g_step=1, *args, **kwargs):
+    def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, log_dir: str, d_steps_per_g_step=1, *args, **kwargs):
         """
         TODO: add arguments for the generator and discriminator constructors.
         """
@@ -46,10 +46,6 @@ class BlurredGAN(tf.keras.Model):
     def std(self):
         return self.blur.std
 
-    @std.setter
-    def std(self, value):
-        self.blur.std.assign(value)
-
     def latents_batch(self):
         assert self.batch_size is not None
         return tf.random.uniform([self.batch_size, self.generator.latent_size])
@@ -64,31 +60,33 @@ class BlurredGAN(tf.keras.Model):
         # interpolate between real and fakes
         batch_size = reals.shape[0]
         a = tf.random.uniform([batch_size, 1, 1, 1])
-        x_hat = reals + a * (fakes - reals)
+        x_hat = a * reals + (1-a) * fakes
 
         with tf.GradientTape() as tape:
-            tape.watch(x_hat)    
-            y_hat = self.discriminator(x_hat, training=True)
+            tape.watch(x_hat)
+            y_hat = self.discriminator(x_hat, training=False)
 
         grad = tape.gradient(y_hat, x_hat)
-        norm = tf.norm(tf.reshape(grad, [tf.shape(grad)[0], -1]), axis=1)
+        norm = tf.norm(tf.reshape(grad, [batch_size, -1]), axis=1)
         gp_term = self.gp_coefficient * tf.reduce_mean((norm - 1.)**2)
         return gp_term
 
     @tf.function
-    def discriminator_step(self, reals, save_summaries: bool):
+    def discriminator_step(self, reals, save_summaries=False):
         self.batch_size = reals.shape[0]
         with tf.GradientTape() as disc_tape:
             fakes = self.generate_samples(training=False)
 
-            blurred_fakes = self.blur(fakes)
-            blurred_reals = self.blur(reals)
+            blurred_fakes = fakes
+            blurred_reals = reals
+            # blurred_fakes = self.blur(fakes)
+            # blurred_reals = self.blur(reals)
 
             fake_scores = self.discriminator(blurred_fakes, training=True)
             real_scores = self.discriminator(blurred_reals, training=True)
 
             gp_term = self.gradient_penalty(blurred_reals, blurred_fakes)
-            disc_loss = (fake_scores - real_scores) + gp_term
+            disc_loss = tf.reduce_mean(fake_scores - real_scores) + gp_term
 
             # We use the same norm term from the ProGAN authors.
             norm_term = (tf.norm(fake_scores, axis=-1) + tf.norm(real_scores, axis=-1))
@@ -120,9 +118,10 @@ class BlurredGAN(tf.keras.Model):
     def generator_step(self):
         with tf.GradientTape() as gen_tape:
             fakes = self.generate_samples(training=True)
-            blurred_fakes = self.blur(fakes)
+            blurred_fakes = fakes
+            # blurred_fakes = self.blur(fakes)
             fake_scores = self.discriminator(blurred_fakes, training=False)
-            gen_loss = tf.reduce_sum(fake_scores, axis=1) / self.batch_size
+            gen_loss = - tf.reduce_mean(fake_scores)
 
         # save metrics.
         self.fake_scores(fake_scores)
@@ -134,9 +133,8 @@ class BlurredGAN(tf.keras.Model):
 
     @tf.function
     def train_on_batch(self, reals, *args, **kwargs):
-        batch_size = reals.shape[0]
         self.reset_metrics()
-        
+
         save_summaries_interval = 10
         save_summaries = tf.equal(self.n_batches % save_summaries_interval, 0)
         
@@ -145,8 +143,9 @@ class BlurredGAN(tf.keras.Model):
         if tf.equal((self.n_batches % self.d_steps_per_g_step), 0):
             self.generator_step()
 
+        batch_size = reals.shape[0]
         self.n_img.assign_add(batch_size)
-        self.n_batches.assign_add(1)        
+        self.n_batches.assign_add(1)
 
         return [metric.result() for metric in self.metrics]
 
@@ -159,7 +158,7 @@ class AdaptiveBlurController(tf.keras.callbacks.Callback):
     Once the standard deviation reaches a value equal to `min_value`, the
     training stops.
     """
-    def __init__(self, p=0.9, warmup_n_batches=100, max_value=23.5, min_value=0.01):
+    def __init__(self, p=0.9, warmup_n_batches=100, min_value=0.01, max_value=23.5):
         super().__init__()
 
         self.p = p
@@ -175,6 +174,9 @@ class AdaptiveBlurController(tf.keras.callbacks.Callback):
 
         self._value = None
 
+    def on_train_begin(self, logs=None):
+        self.model.std.assign(self.std)
+
     def on_batch_end(self, batch, logs):
         # to be used with a BlurredGAN model.
         # assert isinstance(self.model, BlurredGAN), self.model
@@ -187,7 +189,7 @@ class AdaptiveBlurController(tf.keras.callbacks.Callback):
         if 0.45 <= self.value <= 0.55 and batch > self.warmup_n_batches:
             # print("\nProblem is too easy. reducing the blur std:", self.blur_std, self.value)
             self.std = self.smoothing * self.std
-            self.model.std = self.std
+            self.model.std.assign(self.std)
 
         if self.std < self.min_value:
             print("Reached the minimum STD. Training is complete.")

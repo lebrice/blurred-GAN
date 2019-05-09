@@ -19,6 +19,31 @@ def create_result_subdir(result_dir: str, run_name: str) -> str:
     return path
 
 
+def run_id(path_string):
+    return int(path_string.split("/")[-2].split("-")[0])
+
+
+def epoch(path_string):
+    return int(path_string.split("/")[-1].split("_")[1].split(".")[0])
+
+
+def locate_model_file(result_dir: str, run_name: str):
+    import glob
+    import os
+    paths = glob.glob(os.path.join(result_dir, f"*-{run_name}/model_*.h5"))
+    if not paths:
+        return None
+
+   
+    paths = sorted(paths, key=run_id, reverse=True)
+    latest_run_id = run_id(paths[0])
+
+    
+    paths = filter(lambda p: run_id(p) == latest_run_id, paths)
+    paths = sorted(paths, key=epoch, reverse=True)
+    return paths[0]
+
+
 class GenerateSampleGridFigureCallback(tf.keras.callbacks.Callback):
     def __init__(self, log_dir: str, show_blurred_samples=True, period=100):
         super().__init__()
@@ -71,7 +96,7 @@ def plot_to_image(figure):
 
 
 def samples_grid(samples):
-    """Return a 5x5 grid of the MNIST images as a matplotlib figure."""
+    """Return a grid of the samples images as a matplotlib figure."""
     # Create a figure to contain the plot.
     figure = plt.figure()
     for i in range(64):
@@ -80,7 +105,10 @@ def samples_grid(samples):
         plt.xticks([])
         plt.yticks([])
         plt.grid(False)
-        plt.imshow(samples[i])
+        x = samples[i]
+        if len(x.shape) == 2:
+            x = np.reshape(x, [*x.shape, 1])
+        plt.imshow()
     plt.tight_layout(pad=0)
     return figure
 
