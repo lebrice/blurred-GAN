@@ -3,7 +3,7 @@ import tensorflow_datasets as tfds
 from tensorflow.keras import layers
 
 import blurred_gan
-from blurred_gan import BlurredGAN, AdaptiveBlurController
+from blurred_gan import WGANGP, AdaptiveBlurController, HyperParams
 
 import utils
 
@@ -43,7 +43,7 @@ def celeba_dataset(shuffle_buffer_size=100) -> tf.data.Dataset:
     return celeba
 
 
-class Generator(tf.keras.Sequential):
+class DCGANGenerator(tf.keras.Sequential):
     def __init__(self, latent_size=100, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.latent_size = latent_size
@@ -88,7 +88,7 @@ class Generator(tf.keras.Sequential):
         assert self.output_shape == (None, 128, 128, 3), self.output_shape
 
 
-class Discriminator(tf.keras.Sequential):
+class DCGANDiscriminator(tf.keras.Sequential):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.add(layers.Conv2D(16, 5, strides=2, padding='same', input_shape=[128, 128, 3]))
@@ -125,30 +125,39 @@ if __name__ == "__main__":
     import datetime
 
     epochs = 10
-    batch_size = 16
-
-    gen = Generator()
-    disc = Discriminator()
-
+    batch_size_per_gpu = 16
     log_dir = utils.create_result_subdir("results", "celeba")
-    gan = BlurredGAN(gen, disc, log_dir=log_dir, d_steps_per_g_step=5)
-
-    dataset = celeba_dataset().batch(batch_size)
-
-
     checkpoint_filepath = log_dir + '/model_{epoch}.h5'
 
+    # strategy = tf.distribute.CentralStorageStrategy()
+    num_gpus = 1 #strategy.num_replicas_in_sync
+    print("Num gpus:", num_gpus)
+
+    # Compute global batch size using number of replicas.
+    global_batch_size = batch_size_per_gpu * num_gpus
+    dataset = celeba_dataset().batch(global_batch_size)
     # we add a useless 'label' for the fit method to work.
     dataset = dataset.map(lambda v: (v, 0))
 
+    # with strategy.scope():
+    gen = DCGANGenerator()
+    disc = DCGANDiscriminator()
+
+    hyperparameters = HyperParams(
+        d_steps_per_g_step=1,
+        gp_coefficient=10.0,
+        learning_rate=0.001,
+    )
+
+    gan = WGANGP(gen, disc, log_dir=log_dir, hyperparams=hyperparameters)
     gan.fit(
-        x=dataset,
+        x=dataset.take(1000),
         y=None,
-        epochs=1,
-        steps_per_epoch=202_599 // batch_size,
+        epochs=10,
+        # steps_per_epoch=,#202_599 // global_batch_size,
         callbacks=[
             tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath),
-            tf.keras.callbacks.TensorBoard(log_dir=log_dir, update_freq=100),
+            tf.keras.callbacks.TensorBoard(log_dir=log_dir),#, update_freq=100),
             utils.GenerateSampleGridFigureCallback(log_dir=log_dir, period=100),
             AdaptiveBlurController(),
         ]

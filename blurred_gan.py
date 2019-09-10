@@ -4,27 +4,42 @@ from typing import Callable
 from enum import Enum
 from gaussian_blur import GaussianBlur2D
 
+from dataclasses import dataclass
 
-class BlurredGAN(tf.keras.Model):
+@dataclass
+class HyperParams():
+    d_steps_per_g_step: int = 1
+    gp_coefficient: float = 10.0
+    learning_rate: float = 0.001
+
+
+class WGANGP(tf.keras.Model):
     """
     example of a GAN model, where gaussian blurring is applied to the inputs of the discriminator to stabilize training.
     """
-    def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, log_dir: str, d_steps_per_g_step=1, *args, **kwargs):
+    def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, log_dir: str, hyperparams: HyperParams, *args, **kwargs):
         """
         TODO: add arguments for the generator and discriminator constructors.
         """
         super().__init__(*args, **kwargs)
         self.generator = generator
-        self.generator_optimizer = tf.keras.optimizers.Adam()
-
-        self.discriminator = discriminator
-        self.discriminator_optimizer = tf.keras.optimizers.Adam()
+        self.generator_optimizer = tf.keras.optimizers.Adam(learning_rate=hyperparams.learning_rate)
 
         self.blur = GaussianBlur2D()
 
-        self.gp_coefficient = 10.0
-        self.batch_size = None
+        self.discriminator = discriminator
+        self.discriminator_optimizer = tf.keras.optimizers.Adam(learning_rate=hyperparams.learning_rate)
 
+        self.hparams: HyperParams = hyperparams
+        self.gp_coefficient = self.hparams.gp_coefficient
+        # number of discriminator steps per generator step.
+        self.d_steps_per_g_step = self.hparams.d_steps_per_g_step
+        self.batch_size = None # will be determined dynamically when trained.
+        self.save_image_summaries_interval = 5
+        
+        # used to keep track of progress
+        self.log_dir = log_dir
+        self.summary_writer = tf.summary.create_file_writer(log_dir)
         self.n_img = tf.Variable(0, dtype=tf.int64, trainable=False)
         self.n_batches = tf.Variable(0, dtype=tf.int64, trainable=False)
         
@@ -36,11 +51,6 @@ class BlurredGAN(tf.keras.Model):
         self.disc_loss = tf.keras.metrics.Mean("disc_loss", dtype=tf.float32)
         self.std_metric = tf.keras.metrics.Mean("std", dtype=tf.float32)
 
-        # number of discriminator steps per generator step.
-        self.d_steps_per_g_step = d_steps_per_g_step
-
-        self.log_dir = log_dir
-        self.summary_writer = tf.summary.create_file_writer(log_dir)
 
     @property
     def std(self):
@@ -57,7 +67,6 @@ class BlurredGAN(tf.keras.Model):
 
     @tf.function()
     def gradient_penalty(self, reals, fakes):
-        # interpolate between real and fakes
         batch_size = reals.shape[0]
         a = tf.random.uniform([batch_size, 1, 1, 1])
         x_hat = a * reals + (1-a) * fakes
@@ -68,17 +77,13 @@ class BlurredGAN(tf.keras.Model):
 
         grad = tape.gradient(y_hat, x_hat)
         norm = tf.norm(tf.reshape(grad, [batch_size, -1]), axis=1)
-        gp_term = self.gp_coefficient * tf.reduce_mean((norm - 1.)**2)
-        return gp_term
+        return tf.reduce_mean((norm - 1.)**2)
 
-    @tf.function
-    def discriminator_step(self, reals, save_summaries=False):
-        self.batch_size = reals.shape[0]
+    # @tf.function
+    def discriminator_step(self, reals):
         with tf.GradientTape() as disc_tape:
             fakes = self.generate_samples(training=False)
-
-            # blurred_fakes = fakes
-            # blurred_reals = reals
+            
             blurred_fakes = self.blur(fakes)
             blurred_reals = self.blur(reals)
 
@@ -86,33 +91,25 @@ class BlurredGAN(tf.keras.Model):
             real_scores = self.discriminator(blurred_reals, training=True)
 
             gp_term = self.gradient_penalty(blurred_reals, blurred_fakes)
-            disc_loss = tf.reduce_mean(fake_scores - real_scores) + gp_term
+            disc_loss = tf.reduce_mean(fake_scores - real_scores) + self.gp_coefficient * gp_termg 
 
             # We use the same norm term from the ProGAN authors.
-            norm_term = (tf.norm(fake_scores, axis=-1) + tf.norm(real_scores, axis=-1))
-            e_drift = 1e-4
-            disc_loss += e_drift * norm_term
-
-        if save_summaries:
-            with tf.device("/cpu:0"), self.summary_writer.as_default():
-                # TODO: figure out how to use image summaries.
-                tf.summary.image("fakes", fakes, step=self.n_img)
-                tf.summary.image("reals", reals, step=self.n_img)
-                tf.summary.image("blurred_fakes", blurred_fakes, step=self.n_img)
-                tf.summary.image("blurred_reals", blurred_reals, step=self.n_img)
-            self.summary_writer.flush()
-
+            # norm_term = (tf.norm(fake_scores, axis=-1) + tf.norm(real_scores, axis=-1))
+            # e_drift = 1e-4
+            # disc_loss += e_drift * norm_term
+        
+        discriminator_grads = disc_tape.gradient(disc_loss, self.discriminator.trainable_variables)
+        self.discriminator_optimizer.apply_gradients(zip(discriminator_grads, self.discriminator.trainable_variables))
+       
         # save metrics.
         self.fake_scores(fake_scores)
         self.real_scores(real_scores)
         self.gp_term(gp_term)
         self.disc_loss(disc_loss)
         self.std_metric(self.std)
-
-        discriminator_grads = disc_tape.gradient(disc_loss, self.discriminator.trainable_variables)
-        self.discriminator_optimizer.apply_gradients(zip(discriminator_grads, self.discriminator.trainable_variables))
-
-        return disc_loss
+        # images to be added as a summary
+        images = (fakes, reals, blurred_fakes, blurred_reals)
+        return disc_loss, images
 
     @tf.function
     def generator_step(self):
@@ -131,17 +128,18 @@ class BlurredGAN(tf.keras.Model):
         self.generator_optimizer.apply_gradients(zip(generator_grads, self.generator.trainable_variables))
         return gen_loss
 
-    @tf.function
+    # @tf.function
     def train_on_batch(self, reals, *args, **kwargs):
         self.reset_metrics()
-
-        save_summaries_interval = 10
-        save_summaries = tf.equal(self.n_batches % save_summaries_interval, 0)
+        self.batch_size = reals.shape[0]
         
-        self.discriminator_step(reals, save_summaries)
-
+        disc_loss, images = self.discriminator_step(reals)
+        
         if tf.equal((self.n_batches % self.d_steps_per_g_step), 0):
             self.generator_step()
+        
+        if tf.equal(self.n_batches % self.save_image_summaries_interval, 0):
+            self.log_image_summaries(images)
 
         batch_size = reals.shape[0]
         self.n_img.assign_add(batch_size)
@@ -149,22 +147,33 @@ class BlurredGAN(tf.keras.Model):
 
         return [metric.result() for metric in self.metrics]
 
+    def log_image_summaries(self, images):
+        # TODO: idea, instead use a WGANGP that is subclassed, and use a sequential (blur, generator) and (blur, discriminator)
+        with tf.device("/cpu:0"), self.summary_writer.as_default():
+            fakes, reals, blurred_fakes, blurred_reals = images
+                # TODO: figure out how to use image summaries properly.
+            tf.summary.image("fakes", fakes, step=self.n_img)
+            tf.summary.image("reals", reals, step=self.n_img)
+            tf.summary.image("blurred_fakes", blurred_fakes, step=self.n_img)
+            tf.summary.image("blurred_reals", blurred_reals, step=self.n_img)
+            self.summary_writer.flush()
 
-class FixedBlurController(tf.keras.callbacks.Callback):
+
+class BlurScheduleController(tf.keras.callbacks.Callback):
     def __init__(self, schedule_type: str, training_n_steps: int,  max_value: float, min_value=0.01):
         self.initial_std = max_value
 
         # if schedule_type == "exponential_decay":
         self.schedule = tf.keras.optimizers.schedules.ExponentialDecay(
             self.initial_std,
-            decay_steps=training_n_steps,
+            decay_steps=training_n_steps / 10,
             decay_rate=0.96,
             staircase=False,
         )
+        # elif schedule_type == (...)
 
     def on_batch_begin(self, batch, logs):
         value = self.schedule(self.model.n_img)
-        # print("value:", value)
         self.model.std.assign(value)
 
 

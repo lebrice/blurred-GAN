@@ -3,12 +3,12 @@ import tensorflow_datasets as tfds
 from tensorflow.keras import layers
 
 import blurred_gan
-from blurred_gan import BlurredGAN, AdaptiveBlurController, FixedBlurController
+from blurred_gan import WGANGP, AdaptiveBlurController, BlurScheduleController
 
 import utils
 
 
-def dataset(shuffle_buffer_size=100) -> tf.data.Dataset:
+def dataset(shuffle_buffer_size=256) -> tf.data.Dataset:
     """Modern Tensorflow input pipeline for the CelebA dataset"""
 
     @tf.function
@@ -24,27 +24,14 @@ def dataset(shuffle_buffer_size=100) -> tf.data.Dataset:
         image = convert_to_float(image)
         return image
 
-    # (train_images, _), (_, _) = tf.keras.datasets.mnist.load_data()
-    # dataset = tf.data.Dataset.from_tensor_slices(train_images)
-
-    # stats = lambda x: tf.print(tf.reduce_min(x), tf.reduce_max(x), tf.shape(x))
-
-    # stats(next(iter(dataset.take(1))))
-    # stats(next(iter(dataset.map(normalize).take(1))))
-
     dataset = tfds.load(name="mnist", split=tfds.Split.TRAIN)
-
-    # stats(next(iter(dataset.map(take_image).take(1))))
-    # stats(next(iter(dataset.map(take_image).map(preprocess_images).take(1))))
-
-    # exit()
 
     dataset = (dataset
         .map(take_image)
         .batch(16)  # make preprocessing faster by batching inputs.
         .map(preprocess_images)
         .apply(tf.data.experimental.unbatch())
-    #   .cache("./cache")
+    #   .cache("./cache/")
         .shuffle(shuffle_buffer_size)
         .prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
     )
@@ -103,7 +90,7 @@ if __name__ == "__main__":
 
 
     # we add a useless 'label' for the fit method to work.
-    dataset = dataset().batch(batch_size).map(lambda v: (v, 0)).repeat()
+    dataset = dataset().batch(batch_size).map(lambda v: (v, 0))
 
     from gaussian_blur import maximum_reasonable_std
 
@@ -118,11 +105,12 @@ if __name__ == "__main__":
 
     print("Starting from scratch.")
     log_dir = utils.create_result_subdir("results", "mnist")
+
     gen = Generator()
     disc = Discriminator()
-    gan = BlurredGAN(gen, disc, log_dir=log_dir, d_steps_per_g_step=1)
-    initial_epoch = 0
+    gan = WGANGP(gen, disc, log_dir=log_dir, d_steps_per_g_step=1)
 
+    initial_epoch = 0
     checkpoint_filepath = os.path.join(log_dir, "model_{epoch}.h5")
 
     gan.fit(
@@ -130,13 +118,13 @@ if __name__ == "__main__":
         y=None,
         epochs=50,
         initial_epoch=initial_epoch,
-        steps_per_epoch=60_000 // batch_size,
+        # steps_per_epoch=60_000 // batch_size,
         callbacks=[
             tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath, save_weights_only=False),
             tf.keras.callbacks.TensorBoard(log_dir=log_dir, update_freq=100),
             # utils.GenerateSampleGridFigureCallback(log_dir=log_dir, period=60_000 / 2 // batch_size),
             # AdaptiveBlurController(max_value=maximum_reasonable_std(image_resolution=28)),
-            FixedBlurController(schedule_type="exponential_decay", training_n_steps=50*60_000, max_value=maximum_reasonable_std(image_resolution=28)),
+            BlurScheduleController(schedule_type="exponential_decay", training_n_steps=50*60_000, max_value=maximum_reasonable_std(image_resolution=28)),
         ],
     )
 

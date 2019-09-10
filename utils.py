@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import io
 from io import BytesIO
-from blurred_gan import BlurredGAN
+from blurred_gan import WGANGP
 
 
 def create_result_subdir(result_dir: str, run_name: str) -> str:
