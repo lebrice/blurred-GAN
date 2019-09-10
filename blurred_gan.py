@@ -159,6 +159,19 @@ class WGANGP(tf.keras.Model):
             self.summary_writer.flush()
 
 
+class BlurredGAN(WGANGP):
+    """
+    TODO: idea.
+    """
+    def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, *args, **kwargs):
+        self.blur = GaussianBlur2D()        
+        discriminator_with_blur = tf.keras.Sequential([
+            self.blur,
+            discriminator,
+        ])
+        super().__init__(generator, discriminator_with_blur, *args, **kwargs)
+
+
 class BlurScheduleController(tf.keras.callbacks.Callback):
     def __init__(self, schedule_type: str, training_n_steps: int,  max_value: float, min_value=0.01):
         self.initial_std = max_value
