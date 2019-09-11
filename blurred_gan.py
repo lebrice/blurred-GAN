@@ -79,7 +79,7 @@ class WGANGP(tf.keras.Model):
         norm = tf.norm(tf.reshape(grad, [batch_size, -1]), axis=1)
         return tf.reduce_mean((norm - 1.)**2)
 
-    # @tf.function
+    @tf.function
     def discriminator_step(self, reals):
         with tf.GradientTape() as disc_tape:
             fakes = self.generate_samples(training=False)
@@ -112,7 +112,7 @@ class WGANGP(tf.keras.Model):
         images = (fakes, reals, blurred_fakes, blurred_reals)
         return disc_loss, images
 
-    # @tf.function
+    @tf.function
     def generator_step(self):
         with tf.GradientTape() as gen_tape:
             fakes = self.generate_samples(training=True)
@@ -133,19 +133,19 @@ class WGANGP(tf.keras.Model):
     def train_on_batch(self, reals, *args, **kwargs):
         self.reset_metrics()
         self.batch_size = reals.shape[0]
-        with self.summary_writer.as_default():
-                
-            disc_loss, images = self.discriminator_step(reals)
-            
-            if tf.equal((self.n_batches % self.d_steps_per_g_step), 0):
-                self.generator_step()
-            
-            if tf.equal(self.n_batches % self.save_image_summaries_interval, 0):
-                self.log_image_summaries(images)
+        tf.summary.experimental.set_step(self.n_img)
 
-            batch_size = reals.shape[0]
-            self.n_img.assign_add(batch_size)
-            self.n_batches.assign_add(1)
+        disc_loss, images = self.discriminator_step(reals)
+        
+        if tf.equal((self.n_batches % self.d_steps_per_g_step), 0):
+            self.generator_step()
+        
+        if tf.equal(self.n_batches % self.save_image_summaries_interval, 0):
+            self.log_image_summaries(images)
+
+        batch_size = reals.shape[0]
+        self.n_img.assign_add(batch_size)
+        self.n_batches.assign_add(1)
 
         return [metric.result() for metric in self.metrics]
 
@@ -153,10 +153,10 @@ class WGANGP(tf.keras.Model):
         with self.summary_writer.as_default():
             fakes, reals, blurred_fakes, blurred_reals = images
                 # TODO: figure out how to use image summaries properly.
-            tf.summary.image("fakes", fakes, step=self.n_img)
-            tf.summary.image("reals", reals, step=self.n_img)
-            tf.summary.image("blurred_fakes", blurred_fakes, step=self.n_img)
-            tf.summary.image("blurred_reals", blurred_reals, step=self.n_img)
+            tf.summary.image("fakes", fakes)
+            tf.summary.image("reals", reals)
+            tf.summary.image("blurred_fakes", blurred_fakes)
+            tf.summary.image("blurred_reals", blurred_reals)
             self.summary_writer.flush()
 
 

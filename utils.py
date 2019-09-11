@@ -54,7 +54,8 @@ class GenerateSampleGridFigureCallback(tf.keras.callbacks.Callback):
         # self.model: GAN = self.model
         # TODO: need a constant, random vector.
         self.latents = tf.random.uniform([64, 100]).numpy()
-        self.summary_writer = tf.summary.create_file_writer(log_dir)
+        # self.summary_writer = self.model.summary_writer
+        # self.summary_writer = tf.summary.create_file_writer(log_dir + "/samplegrid")
 
     def on_batch_end(self, batch, logs):
         if batch % self.period == 0:
@@ -68,7 +69,7 @@ class GenerateSampleGridFigureCallback(tf.keras.callbacks.Callback):
         samples = normalize_images(samples)
         figure = samples_grid(samples)  # TODO: write figure to a file?
         image = plot_to_image(figure)
-        with self.summary_writer.as_default():
+        with self.model.summary_writer.as_default():
             tf.summary.image("samples_grid", image, step=step)
 
 
