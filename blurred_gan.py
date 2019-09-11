@@ -49,8 +49,8 @@ class WGANGP(tf.keras.Model):
         self.gp_term = tf.keras.metrics.Mean("gp_term", dtype=tf.float32)
         self.gen_loss = tf.keras.metrics.Mean("gen_loss", dtype=tf.float32)
         self.disc_loss = tf.keras.metrics.Mean("disc_loss", dtype=tf.float32)
+        
         self.std_metric = tf.keras.metrics.Mean("std", dtype=tf.float32)
-
 
     @property
     def std(self):
@@ -91,7 +91,7 @@ class WGANGP(tf.keras.Model):
             real_scores = self.discriminator(blurred_reals, training=True)
 
             gp_term = self.gradient_penalty(blurred_reals, blurred_fakes)
-            disc_loss = tf.reduce_mean(fake_scores - real_scores) + self.gp_coefficient * gp_termg 
+            disc_loss = tf.reduce_mean(fake_scores - real_scores) + self.gp_coefficient * gp_term
 
             # We use the same norm term from the ProGAN authors.
             # norm_term = (tf.norm(fake_scores, axis=-1) + tf.norm(real_scores, axis=-1))
@@ -107,11 +107,12 @@ class WGANGP(tf.keras.Model):
         self.gp_term(gp_term)
         self.disc_loss(disc_loss)
         self.std_metric(self.std)
+
         # images to be added as a summary
         images = (fakes, reals, blurred_fakes, blurred_reals)
         return disc_loss, images
 
-    @tf.function
+    # @tf.function
     def generator_step(self):
         with tf.GradientTape() as gen_tape:
             fakes = self.generate_samples(training=True)
@@ -132,24 +133,24 @@ class WGANGP(tf.keras.Model):
     def train_on_batch(self, reals, *args, **kwargs):
         self.reset_metrics()
         self.batch_size = reals.shape[0]
-        
-        disc_loss, images = self.discriminator_step(reals)
-        
-        if tf.equal((self.n_batches % self.d_steps_per_g_step), 0):
-            self.generator_step()
-        
-        if tf.equal(self.n_batches % self.save_image_summaries_interval, 0):
-            self.log_image_summaries(images)
+        with self.summary_writer.as_default():
+                
+            disc_loss, images = self.discriminator_step(reals)
+            
+            if tf.equal((self.n_batches % self.d_steps_per_g_step), 0):
+                self.generator_step()
+            
+            if tf.equal(self.n_batches % self.save_image_summaries_interval, 0):
+                self.log_image_summaries(images)
 
-        batch_size = reals.shape[0]
-        self.n_img.assign_add(batch_size)
-        self.n_batches.assign_add(1)
+            batch_size = reals.shape[0]
+            self.n_img.assign_add(batch_size)
+            self.n_batches.assign_add(1)
 
         return [metric.result() for metric in self.metrics]
 
     def log_image_summaries(self, images):
-        # TODO: idea, instead use a WGANGP that is subclassed, and use a sequential (blur, generator) and (blur, discriminator)
-        with tf.device("/cpu:0"), self.summary_writer.as_default():
+        with self.summary_writer.as_default():
             fakes, reals, blurred_fakes, blurred_reals = images
                 # TODO: figure out how to use image summaries properly.
             tf.summary.image("fakes", fakes, step=self.n_img)
@@ -200,7 +201,6 @@ class AdaptiveBlurController(tf.keras.callbacks.Callback):
     """
     def __init__(self, p=0.9, warmup_n_batches=100, min_value=0.01, max_value=23.5):
         super().__init__()
-
         self.p = p
         self.warmup_n_batches = warmup_n_batches
         # start with a very negative initial value.

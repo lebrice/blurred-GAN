@@ -151,14 +151,14 @@ if __name__ == "__main__":
 
     gan = WGANGP(gen, disc, log_dir=log_dir, hyperparams=hyperparameters)
     gan.fit(
-        x=dataset.take(1000),
+        x=dataset.take(20),
         y=None,
-        epochs=10,
+        epochs=2,
         # steps_per_epoch=,#202_599 // global_batch_size,
         callbacks=[
             tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath),
-            tf.keras.callbacks.TensorBoard(log_dir=log_dir),#, update_freq=100),
-            utils.GenerateSampleGridFigureCallback(log_dir=log_dir, period=100),
+            tf.keras.callbacks.TensorBoard(log_dir=log_dir, update_freq="batch"),
+            utils.GenerateSampleGridFigureCallback(log_dir=log_dir, period=10),
             AdaptiveBlurController(),
         ]
     )
