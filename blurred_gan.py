@@ -11,6 +11,9 @@ class HyperParams():
     d_steps_per_g_step: int = 1
     gp_coefficient: float = 10.0
     learning_rate: float = 0.001
+    
+    """Coefficient from the progan authors which penalizes critic outputs for having a large magnitude."""
+    e_drift: float = 1e-4
 
 @dataclass
 class TrainingConfig():
@@ -99,14 +102,15 @@ class WGANGP(tf.keras.Model):
 
             fake_scores = self.discriminator(blurred_fakes, training=True)
             real_scores = self.discriminator(blurred_reals, training=True)
+            disc_loss = tf.reduce_mean(fake_scores - real_scores)
 
+            # Gradient penalty addition.
             gp_term = self.gradient_penalty(blurred_reals, blurred_fakes)
-            disc_loss = tf.reduce_mean(fake_scores - real_scores) + self.gp_coefficient * gp_term
+            disc_loss += self.gp_coefficient * gp_term
 
             # We use the same norm term from the ProGAN authors.
-            # norm_term = (tf.norm(fake_scores, axis=-1) + tf.norm(real_scores, axis=-1))
-            # e_drift = 1e-4
-            # disc_loss += e_drift * norm_term
+            norm_term = (tf.norm(fake_scores, axis=-1) + tf.norm(real_scores, axis=-1))
+            disc_loss += self.hparams.e_drift * norm_term
         
         discriminator_grads = disc_tape.gradient(disc_loss, self.discriminator.trainable_variables)
         self.discriminator_optimizer.apply_gradients(zip(discriminator_grads, self.discriminator.trainable_variables))
@@ -216,43 +220,56 @@ class AdaptiveBlurController(tf.keras.callbacks.Callback):
     Once the standard deviation reaches a value equal to `min_value`, the
     training stops.
     """
-    def __init__(self, p=0.9, warmup_n_batches=100, min_value=0.01, max_value=23.5):
+    def __init__(self, smoothing=0.99, warmup_n_batches=100, threshold=0.05, min_value=0.01, max_value=23.5):
         super().__init__()
-        self.p = p
+        self.smoothing = smoothing
         self.warmup_n_batches = warmup_n_batches
-        # start with a very negative initial value.
-        self.value = 0
+        self.score_ratio = 0.5
+        self.threshold = threshold
+        
+        self._last_modification_step = 0
+        self.delay_between_modifications = 100
 
-        self.smoothing = 0.95
-
-        # TODO: Fix this bug. self.model is None.
         self.std = max_value
         self.min_value = min_value
-
-        self._value = None
 
     def on_train_begin(self, logs=None):
         self.model.std.assign(self.std)
 
-    def on_batch_end(self, batch, logs):
-        # to be used with a BlurredGAN model.
-        # assert isinstance(self.model, BlurredGAN), self.model
-        if batch < self.warmup_n_batches:
-            return
+    def gan_problem_is_stable(self) -> bool:
+        min_threshold = 0.5 - self.threshold
+        max_threshold = 0.5 + self.threshold
+        return min_threshold <= self.score_ratio <= max_threshold
 
+    def decrease_blur_std(self, batch: int) -> None:
+        # TODO: Test this
+        std_was_just_modified = batch - self._last_modification_step < self.delay_between_modifications
+        if std_was_just_modified:
+            return
+        self.std = self.smoothing * self.std
+        # self.model.blur.std.assign(self.std)
+        self._last_modification_step = batch
+
+    def on_batch_end(self, batch, logs):
         fake_scores = logs["fake_scores"]
         real_scores = logs["real_scores"]
         ratio = fake_scores / (real_scores + fake_scores)
+        self.score_ratio = self.smoothing * self.score_ratio + (1 - self.smoothing) * ratio
+        
+        if batch < self.warmup_n_batches:
+            return
+        
         with self.model.summary_writer.as_default():
-            tf.summary.scalar("ratio", ratio)
-        self.value = self.p * self.value + (1 - self.p) * ratio
+            tf.summary.scalar("blur_controller/ratio", ratio)
+            tf.summary.scalar("blur_controller/smoothed_ratio", self.score_ratio)
+            tf.summary.scalar("blur_controller/stable", int(self.gan_problem_is_stable()))
 
-        if 0.48 <= self.value <= 0.52 and batch > self.warmup_n_batches:
-            print(f"\nProblem is too easy. (ratio is currently {ratio}) reducing the blur std (currently {self.std})")
-            print(fake_scores, real_scores)
-            self.std = self.smoothing * self.std
-            self.model.blur.std.assign(self.std)
+        if self.gan_problem_is_stable():
+           # print(f"\nProblem is too easy. (ratio is currently {ratio}) reducing the blur std (currently {self.std})")
+           self.decrease_blur_std(batch)
+
 
         if self.std < self.min_value:
             print("Reached the minimum STD. Training is complete.")
             self.model.stop_training = True
+

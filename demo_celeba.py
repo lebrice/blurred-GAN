@@ -126,6 +126,8 @@ if __name__ == "__main__":
     import matplotlib.pyplot as plt
     import datetime
 
+    tf.random.set_seed(123123)
+
     epochs = 10
     batch_size_per_gpu = 16
     
@@ -167,7 +169,7 @@ if __name__ == "__main__":
             tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath),
             tf.keras.callbacks.TensorBoard(log_dir=log_dir, update_freq=100, profile_batch=0), # BUG: profile_batch=0 was put there to fix Tensorboard not updating correctly. 
             utils.GenerateSampleGridFigureCallback(log_dir=log_dir, period=100),
-            # AdaptiveBlurController(), # FIXME: this controller is really really wild atm, lowering the STD way too often..
+            AdaptiveBlurController(), # FIXME: this controller is really really wild atm, lowering the STD way too often..
             blurred_gan.BlurScheduleController(total_n_training_batches=steps_per_epoch * epochs)
         ]
     )
