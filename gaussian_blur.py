@@ -139,5 +139,9 @@ class GaussianBlur2D(keras.layers.Layer):
         self.trainable = False
 
     def call(self, image: tf.Tensor):
-        return blur_images(image, self.std)
+        blurred = blur_images(image, self.std)
+        with tf.device("cpu"):
+            tf.summary.image("blur/before", image)
+            tf.summary.image("blur/after", blurred)
+        return blurred
 

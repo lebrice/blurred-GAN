@@ -21,23 +21,25 @@ class TrainingConfig():
     save_image_summaries_interval: int = 50
 
 
+
+
 class WGANGP(tf.keras.Model):
     """
-    example of a GAN model, where gaussian blurring is applied to the inputs of the discriminator to stabilize training.
+    Wasserstein GAN with Gradient Penalty.
+   
     """
     def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, hyperparams: HyperParams, config: TrainingConfig, *args, **kwargs):
         """
-        TODO: add arguments for the generator and discriminator constructors.
+        Creates the GAN, using the given `generator` and `discriminator` models.
         """
         super().__init__(*args, **kwargs)
         self.generator = generator
         self.generator_optimizer = tf.keras.optimizers.Adam(learning_rate=hyperparams.learning_rate)
 
-        self.blur = GaussianBlur2D()
-
         self.discriminator = discriminator
         self.discriminator_optimizer = tf.keras.optimizers.Adam(learning_rate=hyperparams.learning_rate)
 
+        # hyperparameters
         self.hparams: HyperParams = hyperparams
         self.gp_coefficient = self.hparams.gp_coefficient
         # number of discriminator steps per generator step.
@@ -58,20 +60,14 @@ class WGANGP(tf.keras.Model):
         self.gen_loss = tf.keras.metrics.Mean("gen_loss", dtype=tf.float32)
         self.disc_loss = tf.keras.metrics.Mean("disc_loss", dtype=tf.float32)
         
-        self.std_metric = tf.keras.metrics.Mean("std", dtype=tf.float32)
+        # BUG: for some reason, a model needs a non-None value for the 'optimizer' attribute before it can be trained with the .fit method.
+        self.optimizer = "unused"
 
-        # BUG: for some reason, a model needs an 'optimizer' attribute before it can be trained with the .fit method.
-        self.optimizer = tf.keras.optimizers.Adam(learning_rate=hyperparams.learning_rate)
-
-
-
-    @property
-    def std(self):
-        return self.blur.std
-
+    
     def latents_batch(self):
         assert self.batch_size is not None
-        return tf.random.uniform([self.batch_size, self.generator.latent_size])
+        print(self.generator.input_shape[-1])
+        return tf.random.uniform([self.batch_size, self.generator.input_shape[-1]])
 
     def generate_samples(self, latents=None, training=False):
         if latents is None:
@@ -96,16 +92,12 @@ class WGANGP(tf.keras.Model):
     def discriminator_step(self, reals):
         with tf.GradientTape() as disc_tape:
             fakes = self.generate_samples(training=False)
-            
-            blurred_fakes = self.blur(fakes)
-            blurred_reals = self.blur(reals)
-
-            fake_scores = self.discriminator(blurred_fakes, training=True)
-            real_scores = self.discriminator(blurred_reals, training=True)
+            fake_scores = self.discriminator(fakes, training=True)
+            real_scores = self.discriminator(reals, training=True)
             disc_loss = tf.reduce_mean(fake_scores - real_scores)
 
             # Gradient penalty addition.
-            gp_term = self.gradient_penalty(blurred_reals, blurred_fakes)
+            gp_term = self.gradient_penalty(reals, fakes)
             disc_loss += self.gp_coefficient * gp_term
 
             # We use the same norm term from the ProGAN authors.
@@ -125,7 +117,7 @@ class WGANGP(tf.keras.Model):
         # images to be added as a summary
         # BUG: Currently, it seems like we can't have image summaries inside a tf.function (graph). (not thoroughly tested this yet.)
         # hence we pass the images outside of this 'graphified' function.
-        images = (fakes, reals, blurred_fakes, blurred_reals)
+        images = (fakes, reals)
         return disc_loss, images
 
     @tf.function
@@ -162,38 +154,50 @@ class WGANGP(tf.keras.Model):
         batch_size = reals.shape[0]
         self.n_img.assign_add(batch_size)
         self.n_batches.assign_add(1)
-        #BUG: Tensorflow now asks for a specific order for the metrics..
+        #BUG: the order of metrics in the `metrics` attribute is not the same as in the `metrics_names` attribute.
         # the first value in the returned list should be the 'loss'
-        results = [0]
+        metric_results = [0] # some dummy 'loss', which doesn't apply here.
         for metric_name in self.metrics_names[1:]:
-            results += [m.result() for m in self.metrics if m.name == metric_name]        
-        return results
-        # return [metric.result() for metric in self.metrics]
+            metric_results += [m.result() for m in self.metrics if m.name == metric_name]        
+        return metric_results
 
     def log_image_summaries(self, images):
         with tf.device("cpu"), self.summary_writer.as_default():
-            fakes, reals, blurred_fakes, blurred_reals = images
-                # TODO: figure out how to use image summaries properly.
+            fakes, reals = images
             tf.summary.image("fakes", fakes)
             tf.summary.image("reals", reals)
-            tf.summary.image("blurred_fakes", blurred_fakes)
-            tf.summary.image("blurred_reals", blurred_reals)
             # self.summary_writer.flush()
+    
+    def summary(self):
+        print("Discriminator:")
+        self.discriminator.summary()
+        print("Generator:")
+        self.generator.summary()
+        print(f"Total params: {self.count_params():,}")
+
+    def count_params(self):
+        return self.discriminator.count_params() + self.generator.count_params()
 
 
 class BlurredGAN(WGANGP):
     """
-    TODO: idea.
+    Simple variation on the WGAN-GP (or any GAN architecture, for that matter) where we     
     """
     def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, *args, **kwargs):
-        self.blur = GaussianBlur2D()        
+        blur = GaussianBlur2D()   
         discriminator_with_blur = tf.keras.Sequential([
-            self.blur,
+            tf.keras.layers.InputLayer(input_shape=discriminator.input_shape[-3:]),
+            blur,
             discriminator,
         ])
         super().__init__(generator, discriminator_with_blur, *args, **kwargs)
+        self.blur = blur
 
+        self.std_metric = tf.keras.metrics.Mean("std", dtype=tf.float32)
 
+    @property
+    def std(self):
+        return self.blur.std
 
 
 class BlurScheduleController(tf.keras.callbacks.Callback):
@@ -201,7 +205,7 @@ class BlurScheduleController(tf.keras.callbacks.Callback):
         # if schedule_type == "exponential_decay":
         self.schedule = tf.keras.optimizers.schedules.ExponentialDecay(
             max_value,
-            decay_steps=total_n_training_batches / 2, # leave some more 'fine-tuning' time near the end.
+            decay_steps=total_n_training_batches / 10, # leave some more 'fine-tuning' time near the end.
             decay_rate=0.96,
             staircase=False,
         )
@@ -244,11 +248,15 @@ class AdaptiveBlurController(tf.keras.callbacks.Callback):
     def decrease_blur_std(self, batch: int) -> None:
         # TODO: Test this
         std_was_just_modified = batch - self._last_modification_step < self.delay_between_modifications
-        if std_was_just_modified:
-            return
-        self.std = self.smoothing * self.std
-        # self.model.blur.std.assign(self.std)
-        self._last_modification_step = batch
+        if not std_was_just_modified:
+            self.std = self.smoothing * self.std
+            # self.model.blur.std.assign(self.std)
+            with self.model.summary_writer.as_default():
+                tf.summary.scalar("blur_controller/would_modify", 1)
+            self._last_modification_step = batch
+        else:
+            with self.model.summary_writer.as_default():
+                tf.summary.scalar("blur_controller/would_modify", 0)
 
     def on_batch_end(self, batch, logs):
         fake_scores = logs["fake_scores"]

@@ -3,7 +3,7 @@ import tensorflow_datasets as tfds
 from tensorflow.keras import layers
 
 import blurred_gan
-from blurred_gan import WGANGP, AdaptiveBlurController, HyperParams, TrainingConfig
+from blurred_gan import WGANGP, AdaptiveBlurController, HyperParams, TrainingConfig, BlurredGAN
 
 import utils
 
@@ -129,12 +129,15 @@ if __name__ == "__main__":
     tf.random.set_seed(123123)
 
     epochs = 10
-    batch_size_per_gpu = 16
-    
+    batch_size_per_gpu = 32
     
     log_dir = utils.create_result_subdir("results", "celeba")
     checkpoint_filepath = log_dir + '/model_{epoch}.h5'
 
+    train_config = TrainingConfig(
+        log_dir=log_dir,
+    )
+    
     # strategy = tf.distribute.CentralStorageStrategy()
     num_gpus = 1 #strategy.num_replicas_in_sync
     print("Num gpus:", num_gpus)
@@ -155,18 +158,17 @@ if __name__ == "__main__":
         learning_rate=0.001,
     )
 
-    train_config = TrainingConfig(
-        log_dir=log_dir,
-    )
+    
 
-    gan = WGANGP(gen, disc, hyperparams=hyperparameters, config=train_config)
+    gan = BlurredGAN(gen, disc, hyperparams=hyperparameters, config=train_config)
+    gan.summary()
     gan.fit(
         x=dataset,
         y=None,
         epochs=epochs,
         steps_per_epoch=202_599 // global_batch_size,
         callbacks=[
-            tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath),
+            tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath, save_freq=100_000),
             tf.keras.callbacks.TensorBoard(log_dir=log_dir, update_freq=100, profile_batch=0), # BUG: profile_batch=0 was put there to fix Tensorboard not updating correctly. 
             utils.GenerateSampleGridFigureCallback(log_dir=log_dir, period=100),
             AdaptiveBlurController(), # FIXME: this controller is really really wild atm, lowering the STD way too often..
