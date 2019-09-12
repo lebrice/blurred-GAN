@@ -3,7 +3,6 @@
 """
 import tensorflow as tf
 import tensorflow.keras as keras
-import tensorflow.math as math
 from math import pi
 
 print(tf.__version__)
@@ -11,6 +10,7 @@ if tf.__version__[0] != '2':
     print("Please install tensorflow 2.0!")
     exit()
 
+# import tensorflow.math as math
 
 def maximum_reasonable_std(image_resolution: int) -> float:
     kernel_size = image_resolution - 1

@@ -29,13 +29,15 @@ def celeba_dataset(shuffle_buffer_size=100) -> tf.data.Dataset:
         image = normalize(image)
         image = resize_image(image)
         return image
-
-    celeba_dataset = tfds.load(name="celeb_a", split=tfds.Split.ALL)
+    import os
+    from os import environ
+    data_dir = environ.get("DATASETS_DIR", "/tmp/datasets")
+    celeba_dataset = tfds.load(name="celeb_a", data_dir=data_dir, split=tfds.Split.ALL)
     celeba = (celeba_dataset
               .map(take_image)
               .batch(16)  # make preprocessing faster by batching inputs.
               .map(preprocess_images)
-              .apply(tf.data.experimental.unbatch())
+              .unbatch()
             #   .cache("./cache")
               .shuffle(shuffle_buffer_size)
               .prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
@@ -136,8 +138,6 @@ if __name__ == "__main__":
     # Compute global batch size using number of replicas.
     global_batch_size = batch_size_per_gpu * num_gpus
     dataset = celeba_dataset().batch(global_batch_size)
-    # we add a useless 'label' for the fit method to work.
-    dataset = dataset.map(lambda v: (v, 0))
 
     # with strategy.scope():
     gen = DCGANGenerator()
@@ -151,14 +151,14 @@ if __name__ == "__main__":
 
     gan = WGANGP(gen, disc, log_dir=log_dir, hyperparams=hyperparameters)
     gan.fit(
-        x=dataset.take(20),
+        x=dataset,
         y=None,
-        epochs=2,
-        # steps_per_epoch=,#202_599 // global_batch_size,
+        epochs=epochs,
+        steps_per_epoch=202_599 // global_batch_size,
         callbacks=[
             tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath),
             tf.keras.callbacks.TensorBoard(log_dir=log_dir, update_freq="batch"),
-            utils.GenerateSampleGridFigureCallback(log_dir=log_dir, period=10),
+            utils.GenerateSampleGridFigureCallback(log_dir=log_dir, period=100),
             AdaptiveBlurController(),
         ]
     )

@@ -52,6 +52,11 @@ class WGANGP(tf.keras.Model):
         
         self.std_metric = tf.keras.metrics.Mean("std", dtype=tf.float32)
 
+        # BUG: for some reason, a model needs an 'optimizer' attribute before it can be trained with the .fit method.
+        self.optimizer = tf.keras.optimizers.Adam(learning_rate=hyperparams.learning_rate)
+
+
+
     @property
     def std(self):
         return self.blur.std
@@ -146,18 +151,23 @@ class WGANGP(tf.keras.Model):
         batch_size = reals.shape[0]
         self.n_img.assign_add(batch_size)
         self.n_batches.assign_add(1)
-
-        return [metric.result() for metric in self.metrics]
+        #BUG: Tensorflow now asks for a specific order for the metrics..
+        # the first value in the returned list should be the 'loss'
+        results = [0]
+        for metric_name in self.metrics_names[1:]:
+            results += [m.result() for m in self.metrics if m.name == metric_name]        
+        return results
+        # return [metric.result() for metric in self.metrics]
 
     def log_image_summaries(self, images):
-        with self.summary_writer.as_default():
+        with tf.device("cpu"), self.summary_writer.as_default():
             fakes, reals, blurred_fakes, blurred_reals = images
                 # TODO: figure out how to use image summaries properly.
             tf.summary.image("fakes", fakes)
             tf.summary.image("reals", reals)
             tf.summary.image("blurred_fakes", blurred_fakes)
             tf.summary.image("blurred_reals", blurred_reals)
-            self.summary_writer.flush()
+            # self.summary_writer.flush()
 
 
 class BlurredGAN(WGANGP):
