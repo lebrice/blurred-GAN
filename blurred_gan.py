@@ -12,12 +12,17 @@ class HyperParams():
     gp_coefficient: float = 10.0
     learning_rate: float = 0.001
 
+@dataclass
+class TrainingConfig():
+    log_dir: str
+    save_image_summaries_interval: int = 50
+
 
 class WGANGP(tf.keras.Model):
     """
     example of a GAN model, where gaussian blurring is applied to the inputs of the discriminator to stabilize training.
     """
-    def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, log_dir: str, hyperparams: HyperParams, *args, **kwargs):
+    def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, hyperparams: HyperParams, config: TrainingConfig, *args, **kwargs):
         """
         TODO: add arguments for the generator and discriminator constructors.
         """
@@ -35,11 +40,11 @@ class WGANGP(tf.keras.Model):
         # number of discriminator steps per generator step.
         self.d_steps_per_g_step = self.hparams.d_steps_per_g_step
         self.batch_size = None # will be determined dynamically when trained.
-        self.save_image_summaries_interval = 5
         
+        self.config = config
+        self.log_dir = config.log_dir
+        self.summary_writer = tf.summary.create_file_writer(config.log_dir)
         # used to keep track of progress
-        self.log_dir = log_dir
-        self.summary_writer = tf.summary.create_file_writer(log_dir)
         self.n_img = tf.Variable(0, dtype=tf.int64, trainable=False)
         self.n_batches = tf.Variable(0, dtype=tf.int64, trainable=False)
         
@@ -114,6 +119,8 @@ class WGANGP(tf.keras.Model):
         self.std_metric(self.std)
 
         # images to be added as a summary
+        # BUG: Currently, it seems like we can't have image summaries inside a tf.function (graph). (not thoroughly tested this yet.)
+        # hence we pass the images outside of this 'graphified' function.
         images = (fakes, reals, blurred_fakes, blurred_reals)
         return disc_loss, images
 
@@ -145,7 +152,7 @@ class WGANGP(tf.keras.Model):
         if tf.equal((self.n_batches % self.d_steps_per_g_step), 0):
             self.generator_step()
         
-        if tf.equal(self.n_batches % self.save_image_summaries_interval, 0):
+        if tf.equal(self.n_batches % self.config.save_image_summaries_interval, 0):
             self.log_image_summaries(images)
 
         batch_size = reals.shape[0]
@@ -183,21 +190,21 @@ class BlurredGAN(WGANGP):
         super().__init__(generator, discriminator_with_blur, *args, **kwargs)
 
 
-class BlurScheduleController(tf.keras.callbacks.Callback):
-    def __init__(self, schedule_type: str, training_n_steps: int,  max_value: float, min_value=0.01):
-        self.initial_std = max_value
 
+
+class BlurScheduleController(tf.keras.callbacks.Callback):
+    def __init__(self, total_n_training_batches: int, max_value: float = 23.5, min_value=0.01):
         # if schedule_type == "exponential_decay":
         self.schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-            self.initial_std,
-            decay_steps=training_n_steps / 10,
+            max_value,
+            decay_steps=total_n_training_batches / 2, # leave some more 'fine-tuning' time near the end.
             decay_rate=0.96,
             staircase=False,
         )
         # elif schedule_type == (...)
 
     def on_batch_begin(self, batch, logs):
-        value = self.schedule(self.model.n_img)
+        value = self.schedule(self.model.n_batches)
         self.model.std.assign(value)
 
 
@@ -236,13 +243,15 @@ class AdaptiveBlurController(tf.keras.callbacks.Callback):
         fake_scores = logs["fake_scores"]
         real_scores = logs["real_scores"]
         ratio = fake_scores / (real_scores + fake_scores)
-        tf.summary.scalar("ratio", ratio)
+        with self.model.summary_writer.as_default():
+            tf.summary.scalar("ratio", ratio)
         self.value = self.p * self.value + (1 - self.p) * ratio
 
         if 0.48 <= self.value <= 0.52 and batch > self.warmup_n_batches:
-            # print("\nProblem is too easy. reducing the blur std:", self.blur_std, self.value)
+            print(f"\nProblem is too easy. (ratio is currently {ratio}) reducing the blur std (currently {self.std})")
+            print(fake_scores, real_scores)
             self.std = self.smoothing * self.std
-            self.model.std.assign(self.std)
+            self.model.blur.std.assign(self.std)
 
         if self.std < self.min_value:
             print("Reached the minimum STD. Training is complete.")

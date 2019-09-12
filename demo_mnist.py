@@ -124,7 +124,7 @@ if __name__ == "__main__":
             tf.keras.callbacks.TensorBoard(log_dir=log_dir, update_freq=100),
             # utils.GenerateSampleGridFigureCallback(log_dir=log_dir, period=60_000 / 2 // batch_size),
             # AdaptiveBlurController(max_value=maximum_reasonable_std(image_resolution=28)),
-            BlurScheduleController(schedule_type="exponential_decay", training_n_steps=50*60_000, max_value=maximum_reasonable_std(image_resolution=28)),
+            BlurScheduleController(schedule_type="exponential_decay", total_n_training_batches=50*60_000, max_value=maximum_reasonable_std(image_resolution=28)),
         ],
     )
 
