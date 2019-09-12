@@ -133,10 +133,12 @@ def gaussian_blur(
 
 
 class GaussianBlur2D(keras.layers.Layer):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, initial_std=0.01, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.std = tf.Variable(0.01, name="std", trainable=False)
+        self.std = tf.Variable(initial_std, name="std", trainable=False)
         self.trainable = False
+        if "input_shape" in kwargs:
+            self.build(kwargs["input_shape"])
 
     def call(self, image: tf.Tensor):
         blurred = blur_images(image, self.std)
