@@ -147,7 +147,9 @@ if __name__ == "__main__":
     global_batch_size = batch_size_per_gpu * num_gpus
     dataset = celeba_dataset().batch(global_batch_size)
 
-    steps_per_epoch = 202_599 // global_batch_size
+
+    total_n_examples = 202_599
+    steps_per_epoch = total_n_examples // global_batch_size
 
     # with strategy.scope():
     gen = DCGANGenerator()

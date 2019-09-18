@@ -2,9 +2,9 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 from typing import Callable
 from enum import Enum
-from gaussian_blur import GaussianBlur2D
-
 from dataclasses import dataclass
+
+from gaussian_blur import GaussianBlur2D
 
 @dataclass
 class HyperParams():
@@ -16,6 +16,9 @@ class HyperParams():
 
     """Coefficient from the progan authors which penalizes critic outputs for having a large magnitude."""
     e_drift: float = 1e-4
+
+    def asdict(self):
+        return dataclasses.asdict(self)
 
 @dataclass
 class TrainingConfig():
