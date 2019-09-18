@@ -85,7 +85,6 @@ class WGANGP(tf.keras.Model):
     
     def latents_batch(self):
         assert self.batch_size is not None
-        print(self.generator.input_shape[-1])
         return tf.random.uniform([self.batch_size, self.generator.input_shape[-1]])
 
     def generate_samples(self, latents=None, training=False):
@@ -153,6 +152,10 @@ class WGANGP(tf.keras.Model):
     # @tf.function
     def train_on_batch(self, reals, *args, **kwargs):
         self.reset_metrics()
+        # if kwargs.get("reset_metrics"):
+        #     print("resetting metrics")
+        #     self.reset_metrics()
+
         self.batch_size = reals.shape[0]
         tf.summary.experimental.set_step(self.n_img)
 

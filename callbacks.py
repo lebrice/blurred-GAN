@@ -7,7 +7,7 @@ class BlurScheduleController(tf.keras.callbacks.Callback):
     def __init__(self, total_n_training_batches: int, max_value: float = 23.5, min_value=0.01):
         # if schedule_type == "exponential_decay":
         self.schedule = tf.keras.optimizers.schedules.ExponentialDecay(
-            max_value,
+            float(max_value),
             decay_steps=total_n_training_batches / 10, # leave some more 'fine-tuning' time near the end.
             decay_rate=0.96,
             staircase=False,
@@ -37,7 +37,7 @@ class AdaptiveBlurController(tf.keras.callbacks.Callback):
         self._last_modification_step = 0
         self.delay_between_modifications = 100
 
-        self.std = max_value
+        self.std = float(max_value)
         self.min_value = min_value
 
     def on_train_begin(self, logs=None):
@@ -53,7 +53,12 @@ class AdaptiveBlurController(tf.keras.callbacks.Callback):
         std_was_just_modified = batch - self._last_modification_step < self.delay_between_modifications
         if not std_was_just_modified:
             self.std = self.smoothing * self.std
+            
+            
+            # TODO: re-add this step when we feel confident to use it.
             # self.model.blur.std.assign(self.std)
+
+
             with self.model.summary_writer.as_default():
                 tf.summary.scalar("blur_controller/would_modify", 1)
             self._last_modification_step = batch
