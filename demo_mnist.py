@@ -4,7 +4,7 @@ from tensorflow.keras import layers
 
 import blurred_gan
 from blurred_gan import WGANGP, TrainingConfig, HyperParams
-from callbacks import AdaptiveBlurController, BlurScheduleController
+from callbacks import AdaptiveBlurController, BlurScheduleController, FIDScoreCallback
 
 from tensorboard.plugins.hparams import api as hp
 
@@ -83,6 +83,8 @@ class DCGANDiscriminator(tf.keras.Sequential):
         self.add(layers.Dense(1))
 
 
+
+
 if __name__ == "__main__":
     import os
     import matplotlib.pyplot as plt
@@ -98,6 +100,7 @@ if __name__ == "__main__":
 
     train_config = TrainingConfig(
         log_dir=log_dir,
+        save_image_summaries_interval=50,
     )
     
     # strategy = tf.distribute.CentralStorageStrategy()
@@ -119,14 +122,14 @@ if __name__ == "__main__":
         d_steps_per_g_step=1,
         gp_coefficient=10.0,
         learning_rate=0.001,
-        # initial_blur_std=,
+        initial_blur_std=1.0
     )
     gan = WGANGP(gen, disc, hyperparams=hyperparameters, config=train_config)
     gan.summary()
     gan.fit(
-        x=dataset.take(10),
+        x=dataset.take(100),
         y=None,
-        epochs=1, #epochs,
+        epochs=10, #epochs,
         # steps_per_epoch=steps_per_epoch,
         callbacks=[
             tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath, save_freq='epoch'),
@@ -135,34 +138,24 @@ if __name__ == "__main__":
             AdaptiveBlurController(max_value=hyperparameters.initial_blur_std), # FIXME: this controller is not yet operational.
             BlurScheduleController(total_n_training_batches=steps_per_epoch * epochs, max_value=hyperparameters.initial_blur_std),
 
-            hp.KerasCallback(log_dir, hyperparameters.asdict())
+            hp.KerasCallback(log_dir, hyperparameters.asdict()),
+            FIDScoreCallback(
+                image_preprocessing_fn=lambda img: tf.image.grayscale_to_rgb(tf.image.resize(img, [299, 299])),
+                dataset_fn=make_dataset,
+                n=100,
+            ),
         ]
     )
 
     import metrics
       
-    def fid_score(n=1000) -> float:
-        import tensorflow_hub as hub
-        model_url = "https://tfhub.dev/google/tf2-preview/inception_v3/feature_vector/4"
-
-        model = hub.KerasLayer(model_url, output_shape=[2048], input_shape=[299,299,3], trainable=False)
-        image_preprocessing_layer = tf.keras.layers.Lambda(lambda img: tf.image.grayscale_to_rgb(tf.image.resize(img, [299,299])))
-        feature_extractor = tf.keras.Sequential([
-            image_preprocessing_layer,
-            model,
-        ])
-        
-        reals = make_dataset().take(n)
-        fakes = gan.generator.predict(tf.random.uniform((n, gan.generator.input_shape[-1])))
-        
-        return metrics.evaluate_fid(reals, fakes, feature_extractor)
     
-    import time
-    for n in (10, 50, 100, 200, 500, 1000):
-        start = time.time()
-        fid = fid_score(n)
-        length = time.time() - start
-        print(f"n: {n}, time: {length} secs, ratio: {length / n} fid: {fid}")
+    # import time
+    # for n in (10, 50, 100, 200, 500, 1000):
+    #     start = time.time()
+    #     fid = fid_score(n)
+    #     length = time.time() - start
+    #     print(f"n: {n}, time: {length} secs, ratio: {length / n} fid: {fid}")
     # samples = gan.generate_samples()
     # import numpy as np
     # x = np.reshape(samples[0].numpy(), [28, 28])

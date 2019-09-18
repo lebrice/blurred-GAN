@@ -162,8 +162,6 @@ if __name__ == "__main__":
         initial_blur_std=23.5,
     )
 
-    
-
     gan = WGANGP(gen, disc, hyperparams=hyperparameters, config=train_config)
     gan.summary()
     gan.fit(

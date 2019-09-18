@@ -2,6 +2,7 @@ import tensorflow as tf
 import matplotlib.pyplot as plt
 from typing import Callable
 from enum import Enum
+import dataclasses
 from dataclasses import dataclass
 
 from gaussian_blur import GaussianBlur2D

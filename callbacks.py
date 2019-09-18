@@ -2,6 +2,7 @@
 Keras callbacks used to modify the gaussian blur's std during training.
 """
 import tensorflow as tf
+import metrics
 
 class BlurScheduleController(tf.keras.callbacks.Callback):
     def __init__(self, total_n_training_batches: int, max_value: float = 23.5, min_value=0.01):
@@ -89,3 +90,31 @@ class AdaptiveBlurController(tf.keras.callbacks.Callback):
             print("Reached the minimum STD. Training is complete.")
             self.model.stop_training = True
 
+
+class FIDScoreCallback(tf.keras.callbacks.Callback):
+    def __init__(self, image_preprocessing_fn, dataset_fn, n=1000):
+        self.image_preprocessing_fn = image_preprocessing_fn
+        self.make_dataset = dataset_fn
+        self.n = n
+    
+
+    def on_epoch_end(self, epoch, logs):
+        fid = self.fid_score()
+        print(f"\nFID: {fid}")
+
+        with self.model.summary_writer.as_default():
+            tf.summary.scalar("fid_score", fid)
+
+    def fid_score(self) -> float:
+        import tensorflow_hub as hub
+        model_url = "https://tfhub.dev/google/tf2-preview/inception_v3/feature_vector/4"
+
+        feature_extractor = tf.keras.Sequential([
+            tf.keras.layers.Lambda(self.image_preprocessing_fn),
+            hub.KerasLayer(model_url, output_shape=[2048], input_shape=[299,299,3], trainable=False),
+        ])
+        
+        reals = self.make_dataset().take(self.n)
+        fakes = self.model.generator.predict(tf.random.uniform((self.n, self.model.generator.input_shape[-1])))
+        
+        return metrics.evaluate_fid(reals, fakes, feature_extractor)
