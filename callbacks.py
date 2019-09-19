@@ -14,11 +14,9 @@ class ExecuteEveryNExamplesCallback(tf.keras.callbacks.Callback):
     Executes a given function approximately every N examples, depending on if the period is an even multiple of the batch size or not.
     """
 
-    def __init__(self, n: int, function: Callable[[int, Dict], Any]):
+    def __init__(self, n: int):
         super().__init__()
         self.period = n
-        self.function = function
-
         self.num_invocations = 0
         self.samples_seen = 0
 
@@ -27,8 +25,11 @@ class ExecuteEveryNExamplesCallback(tf.keras.callbacks.Callback):
         if self.samples_seen // self.period == self.num_invocations:
             self.num_invocations += 1
             # print(f"\nsamples_seen: {self._samples_seen}, batch: {batch}, i: {self.i}\n")
+            # TODO: Check the function signature.
             self.function(batch, logs)
 
+    def function(self, batch, logs):
+        raise NotImplementedError("Implement the 'function' inside your class!")
 
 class BlurDecayController(tf.keras.callbacks.Callback):
     """
@@ -140,8 +141,10 @@ class FIDScoreCallback(ExecuteEveryNExamplesCallback):
             hub.KerasLayer(self.model_url, output_shape=[2048], input_shape=[
                            299, 299, 3], trainable=False),
         ])
-        super().__init__(every_n_examples, self.fid_score)
+        super().__init__(every_n_examples)
 
+    def function(self, batch, logs):
+        self.fid_score()
 
     def fid_score(self, *args) -> None:
         reals = self.real_samples.take(self.n)
@@ -153,14 +156,57 @@ class FIDScoreCallback(ExecuteEveryNExamplesCallback):
         print(f"- FID: {fid}")
 
 
+class SlicedWassersteinDistanceCallback(ExecuteEveryNExamplesCallback):
+    """
+    Calculate the FID score after every epoch. 
+    """
+    def __init__(self, image_preprocessing_fn: Callable[[tf.Tensor], tf.Tensor], dataset_fn: Callable[[], tf.data.Dataset], n=1000, every_n_examples=10_000,):
+        self.image_preprocessing_fn = image_preprocessing_fn
+        self.make_dataset = dataset_fn
+        self.n = n
+        self.real_samples = self.make_dataset().shuffle(1000).repeat()
+        super().__init__(every_n_examples)
+
+    def function(self, batch, logs):
+        self.swd()
+
+    def swd(self) -> None:
+        """
+        TODO: Clean this up a bit.
+        """
+        reals = tf.data.experimental.get_single_element(self.real_samples.take(self.n).batch(self.n))
+        reals = self.image_preprocessing_fn(reals)
+        
+        latents = tf.random.uniform((self.n, self.model.generator.input_shape[-1]))
+        fakes = self.model.generator.predict(latents)
+        fakes = self.image_preprocessing_fn(fakes)
+
+        from sliced_wasserstein_impl import sliced_wasserstein_distance
+        distances = sliced_wasserstein_distance(real_images=reals, fake_images=fakes)
+        
+        real_distances, fake_distances = [], []
+        for i, (distance_real, distance_fake) in enumerate(distances):
+            print(f"level: {i}, distance_real: {distance_real}, distance_fake: {distance_fake}")
+            real_distances.append(distance_real)
+            fake_distances.append(distance_fake)
+        swd_mean = tf.reduce_mean(fake_distances)
+
+        with self.model.summary_writer.as_default():
+            tf.summary.scalar("swd_mean", swd_mean)
+        print(f"- SWD_MEAN: {swd_mean}")
+
+
 class GenerateSampleGridCallback(ExecuteEveryNExamplesCallback):
     def __init__(self, log_dir: str, show_blurred_samples=True, every_n_examples=1000):
         self.log_dir = log_dir
         self.show_blurred_samples = show_blurred_samples
-        super().__init__(every_n_examples, self.make_grid)
+        super().__init__(every_n_examples)
 
         # we need a constant random vector which will not change over the course of training. 
         self.latents: np.ndarray = None
+
+    def function(self, batch, logs):
+        self.make_grid()
 
     def on_train_begin(self, logs: Dict):
         self.latents = tf.random.uniform([64, self.model.generator.input_shape[-1]])

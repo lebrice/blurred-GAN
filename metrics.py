@@ -88,11 +88,21 @@ def evaluate_fid(reals: np.ndarray, fakes: np.ndarray, feature_extractor: tf.ker
 
     return calculate_fid_safe(real_features, fake_features)
 
+import sliced_wasserstein_impl
+from sliced_wasserstein_impl import sliced_wasserstein_distance
 
-# a1 = tf.random.normal((32, 2048))
-# a2 = tf.random.normal((32, 2048))
-# a2 = a1 + 0.01
-# fid = calculate_fid_safe(a1, a2)
-# print(fid)
-# fid2 = calculate_fid(a1, a2)
-# print(fid2)
+def mean_sliced_wasserstein_distance(real_images, fake_images):
+    distances = sliced_wasserstein_distance(real_images, fake_images)
+    real_distances, fake_distances = [], []
+    for i, (distance_real, distance_fake) in enumerate(distances):
+        print(f"level: {i}, distance_real: {distance_real}, distance_fake: {distance_fake}")
+        real_distances.append(distance_real)
+        fake_distances.append(distance_fake)
+    return tf.reduce_mean(fake_distances)
+
+
+# a1 = tf.random.normal((32, 28, 28, 3))
+# a2 = tf.random.normal((32, 28, 28, 3))
+# # a2 = a1 + 0.01
+# swd = calculate_swd(a1, a2)
+# print(swd)

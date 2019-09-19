@@ -4,7 +4,7 @@ from tensorflow.keras import layers
 
 import blurred_gan
 from blurred_gan import WGANGP, TrainingConfig, HyperParams
-from callbacks import AdaptiveBlurController, BlurDecayController, FIDScoreCallback, GenerateSampleGridCallback
+from callbacks import AdaptiveBlurController, BlurDecayController, FIDScoreCallback, GenerateSampleGridCallback, SlicedWassersteinDistanceCallback
 
 from tensorboard.plugins.hparams import api as hp
 
@@ -145,9 +145,15 @@ if __name__ == "__main__":
             # log the hyperparameters used for this run
             hp.KerasCallback(log_dir, hyperparameters.asdict()),
 
-            # calculate the FID score every epoch.
             FIDScoreCallback(
                 image_preprocessing_fn=lambda img: tf.image.grayscale_to_rgb(tf.image.resize(img, [299, 299])),
+                dataset_fn=make_dataset,
+                n=100,
+                every_n_examples=10_000,
+            ),
+
+            SlicedWassersteinDistanceCallback(
+                image_preprocessing_fn=lambda img: tf.image.grayscale_to_rgb(tf.convert_to_tensor(img)),
                 dataset_fn=make_dataset,
                 n=100,
                 every_n_examples=10_000,
