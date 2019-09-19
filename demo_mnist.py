@@ -4,7 +4,7 @@ from tensorflow.keras import layers
 
 import blurred_gan
 from blurred_gan import WGANGP, TrainingConfig, HyperParams
-from callbacks import AdaptiveBlurController, BlurScheduleController, FIDScoreCallback
+from callbacks import AdaptiveBlurController, BlurDecayController, FIDScoreCallback, GenerateSampleGridCallback
 
 from tensorboard.plugins.hparams import api as hp
 
@@ -122,27 +122,35 @@ if __name__ == "__main__":
         d_steps_per_g_step=1,
         gp_coefficient=10.0,
         learning_rate=0.001,
-        initial_blur_std=1.0
+        initial_blur_std=0.01 # effectively no blur
     )
     gan = WGANGP(gen, disc, hyperparams=hyperparameters, config=train_config)
     gan.summary()
     gan.fit(
-        x=dataset.take(100),
+        x=dataset,
         y=None,
         epochs=10, #epochs,
         # steps_per_epoch=steps_per_epoch,
         callbacks=[
             tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath, save_freq='epoch'),
             tf.keras.callbacks.TensorBoard(log_dir=log_dir, update_freq=100, profile_batch=0), # BUG: profile_batch=0 was put there to fix Tensorboard not updating correctly. 
-            utils.GenerateSampleGridFigureCallback(log_dir=log_dir, period=100),
-            AdaptiveBlurController(max_value=hyperparameters.initial_blur_std), # FIXME: this controller is not yet operational.
-            BlurScheduleController(total_n_training_batches=steps_per_epoch * epochs, max_value=hyperparameters.initial_blur_std),
+            
+            # generate a grid of samples
+            GenerateSampleGridCallback(log_dir=log_dir, every_n_examples=5_000),
 
+            # # FIXME: these controllers need to be cleaned up a tiny bit.
+            # AdaptiveBlurController(max_value=hyperparameters.initial_blur_std),
+            # BlurDecayController(total_n_training_examples=steps_per_epoch * epochs, max_value=hyperparameters.initial_blur_std),
+
+            # log the hyperparameters used for this run
             hp.KerasCallback(log_dir, hyperparameters.asdict()),
+
+            # calculate the FID score every epoch.
             FIDScoreCallback(
                 image_preprocessing_fn=lambda img: tf.image.grayscale_to_rgb(tf.image.resize(img, [299, 299])),
                 dataset_fn=make_dataset,
                 n=100,
+                every_n_examples=10_000,
             ),
         ]
     )

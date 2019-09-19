@@ -4,7 +4,7 @@ from tensorflow.keras import layers
 
 import blurred_gan
 from blurred_gan import WGANGP, HyperParams, TrainingConfig, BlurredGAN
-from callbacks import AdaptiveBlurController, BlurScheduleController
+from callbacks import AdaptiveBlurController, BlurDecayController
 
 import utils
 
@@ -172,8 +172,8 @@ if __name__ == "__main__":
         callbacks=[
             tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath, save_freq=100_000),
             tf.keras.callbacks.TensorBoard(log_dir=log_dir, update_freq=100, profile_batch=0), # BUG: profile_batch=0 was put there to fix Tensorboard not updating correctly. 
-            utils.GenerateSampleGridFigureCallback(log_dir=log_dir, period=100),
+            utils.GenerateSampleGridFigureCallback(log_dir=log_dir, period_batches=1000),
             AdaptiveBlurController(), # FIXME: this controller is not yet operational.
-            BlurScheduleController(total_n_training_batches=steps_per_epoch * epochs)
+            BlurDecayController(total_n_training_examples=steps_per_epoch * epochs)
         ]
     )

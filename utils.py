@@ -34,43 +34,12 @@ def locate_model_file(result_dir: str, run_name: str):
     if not paths:
         return None
 
-   
     paths = sorted(paths, key=run_id, reverse=True)
     latest_run_id = run_id(paths[0])
 
-    
-    paths = filter(lambda p: run_id(p) == latest_run_id, paths)
+    paths = list(filter(lambda p: run_id(p) == latest_run_id, paths))
     paths = sorted(paths, key=epoch, reverse=True)
     return paths[0]
-
-
-class GenerateSampleGridFigureCallback(tf.keras.callbacks.Callback):
-    def __init__(self, log_dir: str, show_blurred_samples=True, period=100):
-        super().__init__()
-        self.log_dir = log_dir
-        self.period = period
-        self.show_blurred_samples = show_blurred_samples
-        # provide type-hinting for the model class.
-        # self.model: GAN = self.model
-        # TODO: need a constant, random vector.
-        self.latents = tf.random.uniform([64, 100]).numpy()
-        # self.summary_writer = self.model.summary_writer
-        # self.summary_writer = tf.summary.create_file_writer(log_dir + "/samplegrid")
-
-    def on_batch_end(self, batch, logs):
-        if batch % self.period == 0:
-            self.function(step=batch)
-
-    def function(self, step):
-        samples = self.model.generate_samples(self.latents, training=False)
-        if self.show_blurred_samples:
-            samples = self.model.blur(samples)
-
-        samples = normalize_images(samples)
-        figure = samples_grid(samples)  # TODO: write figure to a file?
-        image = plot_to_image(figure)
-        with self.model.summary_writer.as_default():
-            tf.summary.image("samples_grid", image, step=step)
 
 
 @tf.function

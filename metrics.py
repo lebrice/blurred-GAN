@@ -66,11 +66,13 @@ def calculate_fid_safe(act1: np.ndarray, act2: np.ndarray, epsilon=1e-6) -> np.n
 
     return diff.dot(diff) + np.trace(sigma1) + np.trace(sigma2) - 2 * tr_covmean
 
+
 def to_dataset(t: Union[tf.Tensor, np.ndarray, tf.data.Dataset]) -> tf.data.Dataset:
         if isinstance(t, tf.data.Dataset):
             return t
         t = tf.convert_to_tensor(t)
         return tf.data.Dataset.from_tensor_slices(t)
+
 
 def evaluate_fid(reals: np.ndarray, fakes: np.ndarray, feature_extractor: tf.keras.Model, batch_size=32):
     # assert reals.shape == fakes.shape, "shapes should match"
