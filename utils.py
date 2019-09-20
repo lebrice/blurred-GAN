@@ -82,3 +82,8 @@ def samples_grid(samples):
     plt.tight_layout(pad=0)
     return figure
 
+def NHWC_to_NCHW(image: tf.Tensor) -> tf.Tensor:
+    return tf.transpose(image, [0, 3, 1, 2])
+
+def NCHW_to_NHWC(image: tf.Tensor) -> tf.Tensor:
+    return tf.transpose(image, [0, 2, 3, 1])

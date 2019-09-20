@@ -14,15 +14,26 @@ class ExecuteEveryNExamplesCallback(tf.keras.callbacks.Callback):
     Executes a given function approximately every N examples, depending on if the period is an even multiple of the batch size or not.
     """
 
-    def __init__(self, n: int):
+    def __init__(self, period: int, starting_from: int = 0):
+        """
+        args:
+            n: executes the `self.function(batch, logs)` method approximately every N examples
+            starting_from: The first invocation should occur after this number of examples (defaults to 0)
+        """
         super().__init__()
-        self.period = n
+        self.period = period
         self.num_invocations = 0
         self.samples_seen = 0
+        self.starting_from = starting_from
 
     def on_batch_end(self, batch, logs: Dict):
-        self.samples_seen += logs['size']
-        if self.samples_seen // self.period == self.num_invocations:
+        batch_size = logs["size"]
+        self.samples_seen += batch_size
+        i = (self.samples_seen - self.starting_from) // self.period
+        # print("\n", i, self.samples_seen, self.starting_from, self.period)
+        if self.samples_seen < self.starting_from:
+            return
+        if i >= self.num_invocations:
             self.num_invocations += 1
             # print(f"\nsamples_seen: {self._samples_seen}, batch: {batch}, i: {self.i}\n")
             # TODO: Check the function signature.
@@ -194,6 +205,91 @@ class SlicedWassersteinDistanceCallback(ExecuteEveryNExamplesCallback):
         with self.model.summary_writer.as_default():
             tf.summary.scalar("swd_mean", swd_mean)
         print(f"- SWD_MEAN: {swd_mean}")
+
+
+import sliced_wasserstein
+class SWDCallback(ExecuteEveryNExamplesCallback):
+    def __init__(self, image_shape: tf.TensorShape, image_preprocessing_fn: Callable[[tf.Tensor], tf.Tensor], dataset_fn: Callable[[], tf.data.Dataset], n=100, every_n_examples=10_000):
+        super().__init__(period=every_n_examples)
+        self.api = sliced_wasserstein.API(image_shape=image_shape)
+        self.image_preprocessing_fn = image_preprocessing_fn
+        self.make_dataset = dataset_fn
+        self.n = n
+        self.real_samples = self.make_dataset().shuffle(1000).repeat()
+
+    def function(self, batch, logs):
+        self.swd()
+    
+    def swd(self):
+        self.api.begin("reals")
+        reals = tf.data.experimental.get_single_element(self.real_samples.take(self.n).batch(self.n))
+        reals = self.image_preprocessing_fn(reals)
+        self.api.feed("reals", reals)
+        real_distances = self.api.end("reals")
+        print(real_distances)
+                
+        self.api.begin("fakes")
+        latents = tf.random.uniform((self.n, self.model.generator.input_shape[-1]))
+        fakes = self.model.generator.predict(latents)
+        fakes = self.image_preprocessing_fn(fakes)
+        self.api.feed("fakes", fakes)
+        distances = self.api.end("fakes")
+        metrics = dict(zip(self.api.get_metric_names(), distances))
+        print(distances)
+        for name, value in metrics.items():
+            self.model.add_metric(value, name=name)
+
+
+class SWDCallback2(ExecuteEveryNExamplesCallback):
+    """
+    Accumulates examples during training and calculates the SWD between real and fake images periodically.
+    """
+    def __init__(self, image_preprocessing_fn, n=1000, every_n_examples=10_000):
+        super().__init__(period=every_n_examples, starting_from=-n)
+        self.n = n
+        self.image_preprocessing_fn = image_preprocessing_fn
+        self.recording = False # hack to do a first run for t=0.
+        self.samples_recorded = 0
+
+        # we need the image size, which we get once trainign starts (on_train_begin below.)
+        self.swd_metric: metrics.SWDMetric
+
+    def on_train_begin(self, logs):
+        image_shape = self.model.discriminator.input_shape[1:]
+        self.swd_metric = metrics.SWDMetric(image_shape)
+    
+    def function(self, batch, logs):
+        self.recording = True
+    
+    def on_batch_end(self, batch: int, logs: Dict):
+        super().on_batch_end(batch, logs)
+        if self.recording:            
+            fakes, reals, blurred_fakes, blurred_reals = self.model.images
+
+            # take only the number of examples we need.
+            # for example, if we already have 32 examples, and the metric function expects 50 examples (i.e, n is 50), we only take 18, rather than another 32.
+            batch_size: int = logs["size"]
+            num_examples_recorded = min(batch_size, self.n - self.samples_recorded)
+            fakes = fakes[:num_examples_recorded]
+            reals = reals[:num_examples_recorded]
+            reals = self.image_preprocessing_fn(reals)
+            fakes = self.image_preprocessing_fn(fakes)
+            self.swd_metric.update_state(reals, fakes)
+
+            
+            self.samples_recorded += num_examples_recorded # add the batch size
+            if self.samples_recorded >= self.n:
+                assert self.samples_recorded == self.n
+
+                results = self.swd_metric.results()
+                print(" - " + " - ".join([f"{name}: {value:.4f}" for name, value in results.items()]))
+                with self.model.summary_writer.as_default():
+                    for name, value in results.items():
+                        tf.summary.scalar(f"swd/{name}", value)
+                # stop recording now.
+                self.recording = False
+                self.swd_metric.reset_states()
+                self.samples_recorded = 0
 
 
 class GenerateSampleGridCallback(ExecuteEveryNExamplesCallback):

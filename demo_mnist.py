@@ -4,7 +4,7 @@ from tensorflow.keras import layers
 
 import blurred_gan
 from blurred_gan import WGANGP, TrainingConfig, HyperParams
-from callbacks import AdaptiveBlurController, BlurDecayController, FIDScoreCallback, GenerateSampleGridCallback, SlicedWassersteinDistanceCallback
+from callbacks import AdaptiveBlurController, BlurDecayController, FIDScoreCallback, GenerateSampleGridCallback, SlicedWassersteinDistanceCallback, SWDCallback2
 
 from tensorboard.plugins.hparams import api as hp
 
@@ -126,6 +126,7 @@ if __name__ == "__main__":
     )
     gan = WGANGP(gen, disc, hyperparams=hyperparameters, config=train_config)
     gan.summary()
+    # tf.config.experimental_run_functions_eagerly(True)
     gan.fit(
         x=dataset,
         y=None,
@@ -145,17 +146,23 @@ if __name__ == "__main__":
             # log the hyperparameters used for this run
             hp.KerasCallback(log_dir, hyperparameters.asdict()),
 
-            FIDScoreCallback(
-                image_preprocessing_fn=lambda img: tf.image.grayscale_to_rgb(tf.image.resize(img, [299, 299])),
-                dataset_fn=make_dataset,
-                n=100,
-                every_n_examples=10_000,
-            ),
+            # FIDScoreCallback(
+            #     image_preprocessing_fn=lambda img: tf.image.grayscale_to_rgb(tf.image.resize(img, [299, 299])),
+            #     dataset_fn=make_dataset,
+            #     n=100,
+            #     every_n_examples=10_000,
+            # ),
 
-            SlicedWassersteinDistanceCallback(
-                image_preprocessing_fn=lambda img: tf.image.grayscale_to_rgb(tf.convert_to_tensor(img)),
-                dataset_fn=make_dataset,
-                n=100,
+            # SlicedWassersteinDistanceCallback(
+            #     image_preprocessing_fn=lambda img: tf.image.grayscale_to_rgb(tf.convert_to_tensor(img)),
+            #     dataset_fn=make_dataset,
+            #     n=100,
+            #     every_n_examples=10_000,
+            # ),
+
+            SWDCallback2(
+                image_preprocessing_fn=lambda img: utils.NHWC_to_NCHW(tf.image.grayscale_to_rgb(tf.convert_to_tensor(img))),
+                n=1000,
                 every_n_examples=10_000,
             ),
         ]

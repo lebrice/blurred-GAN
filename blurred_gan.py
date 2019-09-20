@@ -164,12 +164,13 @@ class WGANGP(tf.keras.Model):
         tf.summary.experimental.set_step(self.n_img)
 
         disc_loss, images = self.discriminator_step(reals)
-        
+        self.images = images
+
         if tf.equal((self.n_batches % self.d_steps_per_g_step), 0):
             self.generator_step()
         
         if tf.equal(self.n_batches % self.config.save_image_summaries_interval, 0):
-            self.log_image_summaries(images)
+            self.log_image_summaries()
 
         batch_size = reals.shape[0]
         self.n_img.assign_add(batch_size)
@@ -182,9 +183,9 @@ class WGANGP(tf.keras.Model):
             metric_results += [m.result() for m in self.metrics if m.name == metric_name]        
         return metric_results
 
-    def log_image_summaries(self, images):
+    def log_image_summaries(self):
         with tf.device("cpu"), self.summary_writer.as_default():
-            fakes, reals, blurred_fakes, blurred_reals = images
+            fakes, reals, blurred_fakes, blurred_reals = self.images
             tf.summary.image("fakes", fakes)
             tf.summary.image("reals", reals)
             tf.summary.image("blurred_fakes", blurred_fakes)

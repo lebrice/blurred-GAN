@@ -4,10 +4,14 @@ This package is intented to contain some GAN metrics for Tensorflow 2.0.
 """
 
 
+import sliced_wasserstein as sw
+import sliced_wasserstein_impl
+from sliced_wasserstein_impl import sliced_wasserstein_distance
 import tensorflow as tf
 import numpy as np
 from scipy.linalg import sqrtm
 from typing import *
+
 
 def calculate_fid(x: np.ndarray, y: np.ndarray) -> float:
     import scipy
@@ -16,10 +20,12 @@ def calculate_fid(x: np.ndarray, y: np.ndarray) -> float:
     sigma_x = np.cov(x, rowvar=False)
     sigma_y = np.cov(y, rowvar=False)
     diff_means_squared = np.dot((mean_x - mean_y), (mean_x - mean_y).T)
-    sigma_term = sigma_x + sigma_y - 2 * scipy.linalg.sqrtm((sigma_x @ sigma_y))
+    sigma_term = sigma_x + sigma_y - 2 * \
+        scipy.linalg.sqrtm((sigma_x @ sigma_y))
     if np.iscomplexobj(sigma_term):
         sigma_term = sigma_term.real
     return diff_means_squared + np.trace(sigma_term)
+
 
 def covariance(x):
     """
@@ -30,6 +36,7 @@ def covariance(x):
     vx = tf.matmul(tf.transpose(x), x)/tf.cast(tf.shape(x)[0], tf.float32)
     cov_xx = vx - mx
     return cov_xx
+
 
 def calculate_fid_safe(act1: np.ndarray, act2: np.ndarray, epsilon=1e-6) -> np.ndarray:
     """
@@ -68,37 +75,103 @@ def calculate_fid_safe(act1: np.ndarray, act2: np.ndarray, epsilon=1e-6) -> np.n
 
 
 def to_dataset(t: Union[tf.Tensor, np.ndarray, tf.data.Dataset]) -> tf.data.Dataset:
-        if isinstance(t, tf.data.Dataset):
-            return t
-        t = tf.convert_to_tensor(t)
-        return tf.data.Dataset.from_tensor_slices(t)
+    if isinstance(t, tf.data.Dataset):
+        return t
+    t = tf.convert_to_tensor(t)
+    return tf.data.Dataset.from_tensor_slices(t)
 
 
 def evaluate_fid(reals: np.ndarray, fakes: np.ndarray, feature_extractor: tf.keras.Model, batch_size=32):
     # assert reals.shape == fakes.shape, "shapes should match"
     # assert feature_extractor.input_shape[1:] == reals.shape[1:], "feature extractor's input doesn't match the provided data's shapes."
- 
+
     reals = to_dataset(reals).batch(batch_size)
     real_features = feature_extractor.predict(reals)
-    del reals # save some memory maybe?
-    
+    del reals  # save some memory maybe?
+
     fakes = to_dataset(fakes).batch(batch_size)
     fake_features = feature_extractor.predict(fakes)
     del fakes
 
     return calculate_fid_safe(real_features, fake_features)
 
-import sliced_wasserstein_impl
-from sliced_wasserstein_impl import sliced_wasserstein_distance
 
 def mean_sliced_wasserstein_distance(real_images, fake_images):
     distances = sliced_wasserstein_distance(real_images, fake_images)
     real_distances, fake_distances = [], []
     for i, (distance_real, distance_fake) in enumerate(distances):
-        print(f"level: {i}, distance_real: {distance_real}, distance_fake: {distance_fake}")
+        print(
+            f"level: {i}, distance_real: {distance_real}, distance_fake: {distance_fake}")
         real_distances.append(distance_real)
         fake_distances.append(distance_fake)
     return tf.reduce_mean(fake_distances)
+
+
+class SWDMetric():
+    """
+    NOTE: Keras metrics execute in graph mode. at the moment, the code to calculate SWD is in numpy, and as such, we can't actually inherit from tf.keras.metrics.Metric.
+    In the future, if this changes, then we should inherit from tf.keras.metrics.Metric. 
+    """
+
+    def __init__(self, image_shape, name="SWDx1e3_avg", dtype=None):
+        self.nhood_size = 7
+        self.nhoods_per_image = 128
+        self.dir_repeats = 4
+        self.dirs_per_repeat = 128
+        self.resolutions = []
+        res = image_shape[1]
+        while res >= 16:
+            self.resolutions.append(res)
+            res //= 2
+
+        self.real_descriptors = [[] for res in self.resolutions]
+        self.fake_descriptors = [[] for res in self.resolutions]
+
+    def get_metric_names(self):
+        return ['SWDx1e3_%d' % res for res in self.resolutions] + ['SWDx1e3_avg']
+
+    def get_metric_formatting(self):
+        return ['%-13.4f'] * len(self.get_metric_names())
+
+    def reset_states(self):
+        for d_list in self.real_descriptors:
+            d_list.clear()
+        for d_list in self.fake_descriptors:
+            d_list.clear()
+
+    def update_state(self, real_minibatch, fake_minibatch, *args, **kwargs):
+        for lod, level in enumerate(sw.generate_laplacian_pyramid(real_minibatch, len(self.resolutions))):
+            desc = sw.get_descriptors_for_minibatch(
+                level, self.nhood_size, self.nhoods_per_image)
+            self.real_descriptors[lod].append(desc)
+
+        for lod, level in enumerate(sw.generate_laplacian_pyramid(real_minibatch, len(self.resolutions))):
+            desc = sw.get_descriptors_for_minibatch(
+                level, self.nhood_size, self.nhoods_per_image)
+            self.fake_descriptors[lod].append(desc)
+        
+    def results(self) -> Dict[str, float]:
+        """
+        Returns a dictionary of metrics, where each (key: value) pair corresponds to the name and value of the sliced wasserstein distance at a given level of the gaussian pyramid.
+        """
+        desc_reals = [sw.finalize_descriptors(d) for d in self.real_descriptors]
+        desc_fakes = [sw.finalize_descriptors(d) for d in self.fake_descriptors]
+        dist = [
+            sw.sliced_wasserstein(dreal, dfake, self.dir_repeats, self.dirs_per_repeat)
+                for dreal, dfake in zip(desc_reals, desc_fakes)
+        ]
+        dist = [d * 1e3 for d in dist]  # multiply by 10^3
+        dist.append(np.mean(dist))
+        results = dict(zip(self.get_metric_names(), dist))
+        return results
+
+    def result(self):
+        """
+        The tf.keras.metrics.Metric API requires a `result()` method. In our case, we just return the average as our 'result'.
+        """
+        results = self.results()
+        average_swd_key = self.get_metric_names()[-1]
+        return results[average_swd_key]
 
 
 # a1 = tf.random.normal((32, 28, 28, 3))
