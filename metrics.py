@@ -4,14 +4,13 @@ This package is intented to contain some GAN metrics for Tensorflow 2.0.
 """
 
 
-import sliced_wasserstein as sw
-import sliced_wasserstein_impl
-from sliced_wasserstein_impl import sliced_wasserstein_distance
 import tensorflow as tf
 import numpy as np
 from scipy.linalg import sqrtm
 from typing import *
 
+import sliced_wasserstein as sw
+import utils
 
 def calculate_fid(x: np.ndarray, y: np.ndarray) -> float:
     import scipy
@@ -74,22 +73,15 @@ def calculate_fid_safe(act1: np.ndarray, act2: np.ndarray, epsilon=1e-6) -> np.n
     return diff.dot(diff) + np.trace(sigma1) + np.trace(sigma2) - 2 * tr_covmean
 
 
-def to_dataset(t: Union[tf.Tensor, np.ndarray, tf.data.Dataset]) -> tf.data.Dataset:
-    if isinstance(t, tf.data.Dataset):
-        return t
-    t = tf.convert_to_tensor(t)
-    return tf.data.Dataset.from_tensor_slices(t)
-
-
 def evaluate_fid(reals: np.ndarray, fakes: np.ndarray, feature_extractor: tf.keras.Model, batch_size=32):
     # assert reals.shape == fakes.shape, "shapes should match"
     # assert feature_extractor.input_shape[1:] == reals.shape[1:], "feature extractor's input doesn't match the provided data's shapes."
 
-    reals = to_dataset(reals).batch(batch_size)
+    reals = utils.to_dataset(reals).batch(batch_size)
     real_features = feature_extractor.predict(reals)
     del reals  # save some memory maybe?
 
-    fakes = to_dataset(fakes).batch(batch_size)
+    fakes = utils.to_dataset(fakes).batch(batch_size)
     fake_features = feature_extractor.predict(fakes)
     del fakes
 

@@ -180,7 +180,9 @@ class WGANGP(tf.keras.Model):
         # the first value in the returned list should be the 'loss'
         metric_results = [0] # some dummy 'loss', which doesn't apply here.
         for metric_name in self.metrics_names[1:]:
-            metric_results += [m.result() for m in self.metrics if m.name == metric_name]        
+            result = [m.result() for m in self.metrics if m.name == metric_name]
+            assert len(result) == 1, "duplicate metric names"
+            metric_results += result
         return metric_results
 
     def log_image_summaries(self):

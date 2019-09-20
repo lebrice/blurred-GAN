@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import io
 from io import BytesIO
-from blurred_gan import WGANGP
+from typing import *
 
 
 def create_result_subdir(result_dir: str, run_name: str) -> str:
@@ -82,8 +82,17 @@ def samples_grid(samples):
     plt.tight_layout(pad=0)
     return figure
 
+
 def NHWC_to_NCHW(image: tf.Tensor) -> tf.Tensor:
     return tf.transpose(image, [0, 3, 1, 2])
 
+
 def NCHW_to_NHWC(image: tf.Tensor) -> tf.Tensor:
     return tf.transpose(image, [0, 2, 3, 1])
+
+
+def to_dataset(t: Union[tf.Tensor, np.ndarray, tf.data.Dataset]) -> tf.data.Dataset:
+    if isinstance(t, tf.data.Dataset):
+        return t
+    t = tf.convert_to_tensor(t)
+    return tf.data.Dataset.from_tensor_slices(t)

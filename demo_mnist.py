@@ -4,7 +4,7 @@ from tensorflow.keras import layers
 
 import blurred_gan
 from blurred_gan import WGANGP, TrainingConfig, HyperParams
-from callbacks import AdaptiveBlurController, BlurDecayController, FIDScoreCallback, GenerateSampleGridCallback, SlicedWassersteinDistanceCallback, SWDCallback2
+import callbacks
 
 from tensorboard.plugins.hparams import api as hp
 
@@ -136,31 +136,22 @@ if __name__ == "__main__":
             tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath, save_freq='epoch'),
             tf.keras.callbacks.TensorBoard(log_dir=log_dir, update_freq=100, profile_batch=0), # BUG: profile_batch=0 was put there to fix Tensorboard not updating correctly. 
             
+            # log the hyperparameters used for this run
+            hp.KerasCallback(log_dir, hyperparameters.asdict()),
+
             # generate a grid of samples
-            GenerateSampleGridCallback(log_dir=log_dir, every_n_examples=5_000),
+            callbacks.GenerateSampleGridCallback(log_dir=log_dir, every_n_examples=5_000),
 
             # # FIXME: these controllers need to be cleaned up a tiny bit.
             # AdaptiveBlurController(max_value=hyperparameters.initial_blur_std),
             # BlurDecayController(total_n_training_examples=steps_per_epoch * epochs, max_value=hyperparameters.initial_blur_std),
-
-            # log the hyperparameters used for this run
-            hp.KerasCallback(log_dir, hyperparameters.asdict()),
-
-            # FIDScoreCallback(
-            #     image_preprocessing_fn=lambda img: tf.image.grayscale_to_rgb(tf.image.resize(img, [299, 299])),
-            #     dataset_fn=make_dataset,
-            #     n=100,
-            #     every_n_examples=10_000,
-            # ),
-
-            # SlicedWassersteinDistanceCallback(
-            #     image_preprocessing_fn=lambda img: tf.image.grayscale_to_rgb(tf.convert_to_tensor(img)),
-            #     dataset_fn=make_dataset,
-            #     n=100,
-            #     every_n_examples=10_000,
-            # ),
-
-            SWDCallback2(
+            callbacks.FIDScoreCallback(
+                image_preprocessing_fn=lambda img: tf.image.grayscale_to_rgb(tf.image.resize(img, [299, 299])),
+                dataset_fn=make_dataset,
+                n=100,
+                every_n_examples=10_000,
+            ),
+            callbacks.SWDCallback(
                 image_preprocessing_fn=lambda img: utils.NHWC_to_NCHW(tf.image.grayscale_to_rgb(tf.convert_to_tensor(img))),
                 n=1000,
                 every_n_examples=10_000,
