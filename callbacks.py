@@ -164,7 +164,7 @@ class FIDScoreCallback(ExecuteEveryNExamplesCallback):
         fid = metrics.evaluate_fid(reals, fakes, self.feature_extractor)
         with self.model.summary_writer.as_default():
             tf.summary.scalar("fid_score", fid)
-        print(f"- FID: {fid}")
+        print(f"- FID: {fid:.4f}")
 
 
 class SWDCallback(ExecuteEveryNExamplesCallback):

@@ -88,17 +88,6 @@ def evaluate_fid(reals: np.ndarray, fakes: np.ndarray, feature_extractor: tf.ker
     return calculate_fid_safe(real_features, fake_features)
 
 
-def mean_sliced_wasserstein_distance(real_images, fake_images):
-    distances = sliced_wasserstein_distance(real_images, fake_images)
-    real_distances, fake_distances = [], []
-    for i, (distance_real, distance_fake) in enumerate(distances):
-        print(
-            f"level: {i}, distance_real: {distance_real}, distance_fake: {distance_fake}")
-        real_distances.append(distance_real)
-        fake_distances.append(distance_fake)
-    return tf.reduce_mean(fake_distances)
-
-
 class SWDMetric():
     """
     NOTE: Keras metrics execute in graph mode. at the moment, the code to calculate SWD is in numpy, and as such, we can't actually inherit from tf.keras.metrics.Metric.
