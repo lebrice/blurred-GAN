@@ -34,7 +34,7 @@ def make_dataset(shuffle_buffer_size=256) -> tf.data.Dataset:
         .map(take_image)
         .batch(16)  # make preprocessing faster by batching inputs.
         .map(preprocess_images)
-        .apply(tf.data.experimental.unbatch())
+        .unbatch()
     #   .cache("./cache/")
         .shuffle(shuffle_buffer_size)
         .prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
@@ -126,6 +126,23 @@ if __name__ == "__main__":
     )
     gan = blurred_gan.BlurredGAN(gen, disc, hyperparams=hyperparameters, config=train_config)
     gan.summary()
+
+    metric_callbacks = [
+        callbacks.FIDScoreCallback(
+            image_preprocessing_fn=lambda img: tf.image.grayscale_to_rgb(tf.image.resize(img, [299, 299])),
+            dataset_fn=make_dataset,
+            n=100,
+            every_n_examples=10_000,
+        ),
+        callbacks.SWDCallback(
+            image_preprocessing_fn=lambda img: utils.NHWC_to_NCHW(tf.image.grayscale_to_rgb(tf.convert_to_tensor(img))),
+            n=1000,
+            every_n_examples=10_000,
+        ),
+    ]
+
+
+
     # tf.config.experimental_run_functions_eagerly(True)
     gan.fit(
         x=dataset,
@@ -145,17 +162,7 @@ if __name__ == "__main__":
             # # FIXME: these controllers need to be cleaned up a tiny bit.
             # AdaptiveBlurController(max_value=hyperparameters.initial_blur_std),
             # BlurDecayController(total_n_training_examples=steps_per_epoch * epochs, max_value=hyperparameters.initial_blur_std),
-            # callbacks.FIDScoreCallback(
-            #     image_preprocessing_fn=lambda img: tf.image.grayscale_to_rgb(tf.image.resize(img, [299, 299])),
-            #     dataset_fn=make_dataset,
-            #     n=100,
-            #     every_n_examples=10_000,
-            # ),
-            # callbacks.SWDCallback(
-            #     image_preprocessing_fn=lambda img: utils.NHWC_to_NCHW(tf.image.grayscale_to_rgb(tf.convert_to_tensor(img))),
-            #     n=1000,
-            #     every_n_examples=10_000,
-            # ),
+            *metric_callbacks,
         ]
     )
 
