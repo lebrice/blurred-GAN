@@ -124,7 +124,7 @@ if __name__ == "__main__":
         learning_rate=0.001,
         initial_blur_std=0.01 # effectively no blur
     )
-    gan = WGANGP(gen, disc, hyperparams=hyperparameters, config=train_config)
+    gan = blurred_gan.BlurredGAN(gen, disc, hyperparams=hyperparameters, config=train_config)
     gan.summary()
     # tf.config.experimental_run_functions_eagerly(True)
     gan.fit(
@@ -145,17 +145,17 @@ if __name__ == "__main__":
             # # FIXME: these controllers need to be cleaned up a tiny bit.
             # AdaptiveBlurController(max_value=hyperparameters.initial_blur_std),
             # BlurDecayController(total_n_training_examples=steps_per_epoch * epochs, max_value=hyperparameters.initial_blur_std),
-            callbacks.FIDScoreCallback(
-                image_preprocessing_fn=lambda img: tf.image.grayscale_to_rgb(tf.image.resize(img, [299, 299])),
-                dataset_fn=make_dataset,
-                n=100,
-                every_n_examples=10_000,
-            ),
-            callbacks.SWDCallback(
-                image_preprocessing_fn=lambda img: utils.NHWC_to_NCHW(tf.image.grayscale_to_rgb(tf.convert_to_tensor(img))),
-                n=1000,
-                every_n_examples=10_000,
-            ),
+            # callbacks.FIDScoreCallback(
+            #     image_preprocessing_fn=lambda img: tf.image.grayscale_to_rgb(tf.image.resize(img, [299, 299])),
+            #     dataset_fn=make_dataset,
+            #     n=100,
+            #     every_n_examples=10_000,
+            # ),
+            # callbacks.SWDCallback(
+            #     image_preprocessing_fn=lambda img: utils.NHWC_to_NCHW(tf.image.grayscale_to_rgb(tf.convert_to_tensor(img))),
+            #     n=1000,
+            #     every_n_examples=10_000,
+            # ),
         ]
     )
 

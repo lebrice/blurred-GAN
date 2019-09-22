@@ -6,6 +6,8 @@ import dataclasses
 from dataclasses import dataclass
 
 from gaussian_blur import GaussianBlur2D
+import os
+
 
 @dataclass
 class HyperParams():
@@ -57,7 +59,7 @@ class WGANGP(tf.keras.Model):
         self.discriminator = discriminator
         self.discriminator_optimizer = tf.keras.optimizers.Adam(learning_rate=hyperparams.learning_rate)
 
-        self.blur = GaussianBlur2D(initial_std=hyperparams.initial_blur_std)
+        # self.blur = GaussianBlur2D(initial_std=hyperparams.initial_blur_std)
 
         # hyperparameters
         self.hparams: HyperParams = hyperparams
@@ -81,7 +83,7 @@ class WGANGP(tf.keras.Model):
         self.disc_loss = tf.keras.metrics.Mean("disc_loss", dtype=tf.float32)
         
         #TODO: remove later
-        self.std_metric = tf.keras.metrics.Mean("std", dtype=tf.float32)
+        # self.std_metric = tf.keras.metrics.Mean("std", dtype=tf.float32)
         
         # BUG: for some reason, a model needs a non-None value for the 'optimizer' attribute before it can be trained with the .fit method.
         self.optimizer = "unused"
@@ -100,11 +102,10 @@ class WGANGP(tf.keras.Model):
     def discriminator_step(self, reals):
         with tf.GradientTape() as disc_tape:
             fakes = self.generate_samples(training=False)
-
-            # blurred_reals = reals
-            # blurred_fakes = fakes
-            blurred_reals = self.blur(reals)
-            blurred_fakes = self.blur(fakes)
+            blurred_reals = reals
+            blurred_fakes = fakes
+            # blurred_reals = self.blur(reals)
+            # blurred_fakes = self.blur(fakes)
 
             fake_scores = self.discriminator(blurred_fakes, training=True)
             real_scores = self.discriminator(blurred_reals, training=True)
@@ -128,7 +129,7 @@ class WGANGP(tf.keras.Model):
         self.disc_loss(disc_loss)
 
         # TODO: remove later
-        self.std_metric(self.std)
+        # self.std_metric(self.std)
 
         # images to be added as a summary
         # BUG: Currently, it seems like we can't have image summaries inside a tf.function (graph). (not thoroughly tested this yet.)
@@ -204,13 +205,13 @@ class WGANGP(tf.keras.Model):
     def count_params(self):
         return self.discriminator.count_params() + self.generator.count_params()
 
-    @property
-    def std(self):
-        return self.blur.std
+    # @property
+    # def std(self):
+    #     return self.blur.std
 
 class BlurredGAN(WGANGP):
     """
-    IDEA: Simple variation on the WGAN-GP (or any GAN architecture, for that matter) where we     
+    IDEA: Simple variation on the WGAN-GP (or any GAN architecture, for that matter) where we added the blurring layer in the discriminator    
     """
     def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, *args, **kwargs):
         blur = GaussianBlur2D(initial_std=23.5, input_shape=discriminator.input_shape[1:])
