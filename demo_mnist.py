@@ -35,7 +35,7 @@ def make_dataset(shuffle_buffer_size=256) -> tf.data.Dataset:
         .batch(16)  # make preprocessing faster by batching inputs.
         .map(preprocess_images)
         .unbatch()
-    #   .cache("./cache/")
+        .cache()
         .shuffle(shuffle_buffer_size)
         .prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
     )
@@ -94,16 +94,9 @@ if __name__ == "__main__":
 
     epochs = 10
     batch_size_per_gpu = 32
-    
-    log_dir = utils.create_result_subdir("results", "mnist")
-    checkpoint_filepath = log_dir + '/model_{epoch}.h5'
 
-    train_config = TrainingConfig(
-        log_dir=log_dir,
-        save_image_summaries_interval=50,
-    )
-    
-    # strategy = tf.distribute.CentralStorageStrategy()
+   
+
     num_gpus = 1 #strategy.num_replicas_in_sync
     print("Num gpus:", num_gpus)
 
@@ -114,18 +107,37 @@ if __name__ == "__main__":
     total_n_examples = 60_000
     steps_per_epoch = total_n_examples // global_batch_size
 
-    # with strategy.scope():
-    gen = DCGANGenerator()
-    disc = DCGANDiscriminator()
+    results_dir = "results"
 
+    resume_run_id = 1
+    log_dir = f"{results_dir}/{resume_run_id:2d}-mnist"
+    
+    train_config = TrainingConfig(
+        log_dir=log_dir,
+        save_image_summaries_interval=50,
+    )
     hyperparameters = HyperParams(
         d_steps_per_g_step=1,
         gp_coefficient=10.0,
         learning_rate=0.001,
         initial_blur_std=0.01 # effectively no blur
     )
+
+    gen = DCGANGenerator()
+    disc = DCGANDiscriminator()
     gan = blurred_gan.BlurredGAN(gen, disc, hyperparams=hyperparameters, config=train_config)
-    gan.summary()
+
+    latest_checkpoint = tf.train.latest_checkpoint(log_dir)
+    if latest_checkpoint:
+        gan.load_weights(latest_checkpoint)
+        print("Loaded model weights from previous checkpoint:", latest_checkpoint)
+        print(f"Model was previously trained on {gan.n_img.numpy()} images")
+        
+        gan.hparams = HyperParams.from_json(log_dir + "/hyper_parameters.json")
+        gan.config = TrainingConfig.from_json(log_dir + "/train_config.json")  
+
+    gan.hparams.save_json(log_dir + "/hyper_parameters.json")
+    gan.config.save_json(log_dir + "/train_config.json")
 
     metric_callbacks = [
         callbacks.FIDScoreCallback(
@@ -141,18 +153,23 @@ if __name__ == "__main__":
         ),
     ]
 
-
-
-    # tf.config.experimental_run_functions_eagerly(True)
     gan.fit(
         x=dataset,
         y=None,
-        epochs=10, #epochs,
-        # steps_per_epoch=steps_per_epoch,
+        epochs=epochs,
+        initial_epoch=gan.n_img // total_n_examples,
         callbacks=[
-            tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath, save_freq='epoch'),
-            tf.keras.callbacks.TensorBoard(log_dir=log_dir, update_freq=100, profile_batch=0), # BUG: profile_batch=0 was put there to fix Tensorboard not updating correctly. 
-            
+            tf.keras.callbacks.ModelCheckpoint(
+                filepath= log_dir + '/model_{epoch}.ckpt',
+                save_freq='epoch',
+                save_weights_only=False,
+            ),
+            # tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath, save_freq='epoch'),
+            tf.keras.callbacks.TensorBoard(
+                log_dir=log_dir,
+                update_freq=100,
+                profile_batch=0, # BUG: profile_batch=0 was put there to fix Tensorboard not updating correctly. 
+            ), 
             # log the hyperparameters used for this run
             hp.KerasCallback(log_dir, hyperparameters.asdict()),
 
@@ -162,23 +179,20 @@ if __name__ == "__main__":
             # # FIXME: these controllers need to be cleaned up a tiny bit.
             # AdaptiveBlurController(max_value=hyperparameters.initial_blur_std),
             # BlurDecayController(total_n_training_examples=steps_per_epoch * epochs, max_value=hyperparameters.initial_blur_std),
-            *metric_callbacks,
+            
+            # heavy metric callbacks
+            # *metric_callbacks,
         ]
     )
 
-    import metrics
-      
-    
-    # import time
-    # for n in (10, 50, 100, 200, 500, 1000):
-    #     start = time.time()
-    #     fid = fid_score(n)
-    #     length = time.time() - start
-    #     print(f"n: {n}, time: {length} secs, ratio: {length / n} fid: {fid}")
-    # samples = gan.generate_samples()
-    # import numpy as np
-    # x = np.reshape(samples[0].numpy(), [28, 28])
-    # print(x.shape)
-    # plt.imshow(x, cmap="gray")
-    # plt.show()
-    # exit()
+    # Save the model
+    print("Done training.")
+
+
+    samples = gan.generate_samples()
+    import numpy as np
+    x = np.reshape(samples[0].numpy(), [28, 28])
+    print(x.shape)
+    plt.imshow(x, cmap="gray")
+    plt.show()
+    exit()

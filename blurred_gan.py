@@ -4,13 +4,14 @@ from typing import Callable
 from enum import Enum
 import dataclasses
 from dataclasses import dataclass
+import os
+import json
 
 from gaussian_blur import GaussianBlur2D
-import os
-
+from utils import JsonSerializableMixin
 
 @dataclass
-class HyperParams():
+class HyperParams(JsonSerializableMixin):
     d_steps_per_g_step: int = 1
     gp_coefficient: float = 10.0
     learning_rate: float = 0.001
@@ -20,11 +21,8 @@ class HyperParams():
     """Coefficient from the progan authors which penalizes critic outputs for having a large magnitude."""
     e_drift: float = 1e-4
 
-    def asdict(self):
-        return dataclasses.asdict(self)
-
 @dataclass
-class TrainingConfig():
+class TrainingConfig(JsonSerializableMixin):
     log_dir: str
     save_image_summaries_interval: int = 50
 
@@ -72,8 +70,8 @@ class WGANGP(tf.keras.Model):
         self.log_dir = config.log_dir
         self.summary_writer = tf.summary.create_file_writer(config.log_dir)
         # used to keep track of progress
-        self.n_img = tf.Variable(0, dtype=tf.int64, trainable=False)
-        self.n_batches = tf.Variable(0, dtype=tf.int64, trainable=False)
+        self.n_img = tf.Variable(0, dtype=tf.int64, trainable=False, name="n_img")
+        self.n_batches = tf.Variable(0, dtype=tf.int64, trainable=False, name="n_batches")
         
         # Keras metrics to be showed during training.
         self.real_scores = tf.keras.metrics.Mean("real_scores", dtype=tf.float32)
@@ -213,14 +211,14 @@ class BlurredGAN(WGANGP):
     """
     IDEA: Simple variation on the WGAN-GP (or any GAN architecture, for that matter) where we added the blurring layer in the discriminator    
     """
-    def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, *args, **kwargs):
-        blur = GaussianBlur2D(initial_std=23.5, input_shape=discriminator.input_shape[1:])
+    def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, hyperparams: HyperParams, config: TrainingConfig, **kwargs):
+        blur = GaussianBlur2D(initial_std=hyperparams.initial_blur_std, input_shape=discriminator.input_shape[1:])
         discriminator_with_blur = tf.keras.Sequential([
             # tf.keras.layers.InputLayer(input_shape=discriminator.input_shape[1:]),
             blur,
             discriminator,
         ])
-        super().__init__(generator, discriminator_with_blur, *args, **kwargs)
+        super().__init__(generator, discriminator_with_blur, hyperparams=hyperparams, config=config, **kwargs)
         self.blur = blur
         self.std_metric = tf.keras.metrics.Mean("std", dtype=tf.float32)
 

@@ -4,7 +4,8 @@ import matplotlib.pyplot as plt
 import io
 from io import BytesIO
 from typing import *
-
+import dataclasses
+import json
 
 def create_result_subdir(result_dir: str, run_name: str) -> str:
     import glob
@@ -27,12 +28,12 @@ def epoch(path_string):
     return int(path_string.split("/")[-1].split("_")[1].split(".")[0])
 
 
-def locate_model_file(result_dir: str, run_name: str):
+def locate_model_file(result_dir: str, run_name: str, suffix="hdf5") -> str:
     import glob
     import os
-    paths = glob.glob(os.path.join(result_dir, f"*-{run_name}/model_*.h5"))
+    paths = glob.glob(os.path.join(result_dir, f"*-{run_name}/model_*.{suffix}"))
     if not paths:
-        return None
+        raise FileNotFoundError
 
     paths = sorted(paths, key=run_id, reverse=True)
     latest_run_id = run_id(paths[0])
@@ -96,3 +97,23 @@ def to_dataset(t: Union[tf.Tensor, np.ndarray, tf.data.Dataset]) -> tf.data.Data
         return t
     t = tf.convert_to_tensor(t)
     return tf.data.Dataset.from_tensor_slices(t)
+
+
+def read_json(file_path: str) -> Dict:
+    with open(file_path, 'r') as f:
+            return json.load(f)
+
+
+class JsonSerializableMixin():
+    def asdict(self):
+        return dataclasses.asdict(self)
+    
+    def save_json(self, file_path: str) -> None:
+        with open(file_path, 'w') as f:
+            d = self.asdict()
+            json.dump(d, f, indent=1)
+
+    @classmethod
+    def from_json(cls, file_path: str):
+        d = read_json(file_path)
+        return cls(**d)
