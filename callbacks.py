@@ -14,14 +14,14 @@ class ExecuteEveryNExamplesCallback(tf.keras.callbacks.Callback):
     Executes a given function approximately every N examples, depending on if the period is an even multiple of the batch size or not.
     """
 
-    def __init__(self, period: int, starting_from: int = 0):
+    def __init__(self, n: int, starting_from: int = 0):
         """
         args:
             n: executes the `self.function(batch, logs)` method approximately every N examples
             starting_from: The first invocation should occur after this number of examples (defaults to 0)
         """
         super().__init__()
-        self.period = period
+        self.period = n
         self.num_invocations = 0
         self.samples_seen = 0
         self.starting_from = starting_from
@@ -139,21 +139,20 @@ class FIDScoreCallback(ExecuteEveryNExamplesCallback):
     """
     Calculate the FID score after every epoch. 
     """
-    def __init__(self, image_preprocessing_fn: Callable[[tf.Tensor], tf.Tensor], dataset_fn: Callable[[], tf.data.Dataset], n=1000, every_n_examples=10_000,):
+    def __init__(self, image_preprocessing_fn: Callable[[tf.Tensor], tf.Tensor], dataset_fn: Callable[[], tf.data.Dataset], num_samples=1000, every_n_examples=10_000,):
+        super().__init__(every_n_examples)
         self.image_preprocessing_fn = image_preprocessing_fn
         self.make_dataset = dataset_fn
-        self.n = n
+        self.num_samples = num_samples
 
         self.real_samples = self.make_dataset().shuffle(1000).repeat()
 
         self.model_url = "https://tfhub.dev/google/tf2-preview/inception_v3/feature_vector/4"
         self.feature_extractor = tf.keras.Sequential([
             tf.keras.layers.Lambda(self.image_preprocessing_fn),
-            hub.KerasLayer(self.model_url, output_shape=[2048], input_shape=[
-                           299, 299, 3], trainable=False),
+            hub.KerasLayer(self.model_url, output_shape=[2048], trainable=False),
         ])
-        super().__init__(every_n_examples)
-
+    
     def function(self, batch, logs):
         self.fid_score()
 
@@ -171,9 +170,9 @@ class SWDCallback(ExecuteEveryNExamplesCallback):
     """
     Accumulates examples during training and calculates the SWD between real and fake images periodically.
     """
-    def __init__(self, image_preprocessing_fn, n=1000, every_n_examples=10_000):
-        super().__init__(period=every_n_examples, starting_from=-n)
-        self.n = n
+    def __init__(self, image_preprocessing_fn, num_samples=1000, every_n_examples=10_000):
+        super().__init__(n=every_n_examples, starting_from=-num_samples)
+        self.num_samples = num_samples
         self.image_preprocessing_fn = image_preprocessing_fn
         self.recording = False # hack to do a first run for t=0.
         self.samples_recorded = 0
@@ -196,7 +195,7 @@ class SWDCallback(ExecuteEveryNExamplesCallback):
             # take only the number of examples we need.
             # for example, if we already have 32 examples, and the metric function expects 50 examples (i.e, n is 50), we only take 18, rather than another 32.
             batch_size: int = logs["size"]
-            num_examples_recorded = min(batch_size, self.n - self.samples_recorded)
+            num_examples_recorded = min(batch_size, self.num_samples - self.samples_recorded)
             fakes = fakes[:num_examples_recorded]
             reals = reals[:num_examples_recorded]
             reals = self.image_preprocessing_fn(reals)
@@ -205,8 +204,8 @@ class SWDCallback(ExecuteEveryNExamplesCallback):
 
             
             self.samples_recorded += num_examples_recorded # add the batch size
-            if self.samples_recorded >= self.n:
-                assert self.samples_recorded == self.n
+            if self.samples_recorded >= self.num_samples:
+                assert self.samples_recorded == self.num_samples
 
                 results = self.swd_metric.results()
                 print(" - " + " - ".join([f"{name}: {value:.4f}" for name, value in results.items()]))
@@ -223,7 +222,7 @@ class GenerateSampleGridCallback(ExecuteEveryNExamplesCallback):
     def __init__(self, log_dir: str, show_blurred_samples=True, every_n_examples=1000):
         self.log_dir = log_dir
         self.show_blurred_samples = show_blurred_samples
-        super().__init__(every_n_examples)
+        super().__init__(n=every_n_examples)
 
         # we need a constant random vector which will not change over the course of training. 
         self.latents: np.ndarray = None
@@ -244,3 +243,16 @@ class GenerateSampleGridCallback(ExecuteEveryNExamplesCallback):
         image = utils.plot_to_image(figure)
         with self.model.summary_writer.as_default():
             tf.summary.image("samples_grid", image)
+
+
+class SaveModelCallback(ExecuteEveryNExamplesCallback):
+    def __init__(self, checkpoint_manager: tf.train.CheckpointManager, n: int = 10_000):
+        super().__init__(n=n)
+        self.manager = checkpoint_manager
+
+    def function(self, batch, logs):
+        # print(f"\nSaving the model after seeing {self.samples_seen} samples.")
+        self.manager.save(self.samples_seen)
+
+
+

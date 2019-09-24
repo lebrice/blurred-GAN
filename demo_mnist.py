@@ -3,7 +3,7 @@ import tensorflow_datasets as tfds
 from tensorflow.keras import layers
 
 import blurred_gan
-from blurred_gan import WGANGP, TrainingConfig, HyperParams
+from blurred_gan import WGANGP, TrainingConfig, WGANHyperParameters
 import callbacks
 
 from tensorboard.plugins.hparams import api as hp
@@ -110,45 +110,58 @@ if __name__ == "__main__":
     results_dir = "results"
 
     resume_run_id = 1
-    log_dir = f"{results_dir}/{resume_run_id:2d}-mnist"
+    log_dir = f"{results_dir}/{resume_run_id:02}-mnist"
+    checkpoint_dir = log_dir + "/checkpoints"
     
     train_config = TrainingConfig(
         log_dir=log_dir,
+        checkpoint_dir=checkpoint_dir,
         save_image_summaries_interval=50,
     )
-    hyperparameters = HyperParams(
+    hyperparameters = WGANHyperParameters(
         d_steps_per_g_step=1,
         gp_coefficient=10.0,
         learning_rate=0.001,
-        initial_blur_std=0.01 # effectively no blur
+        initial_blur_std=0.02 # effectively no blur
     )
 
     gen = DCGANGenerator()
     disc = DCGANDiscriminator()
     gan = blurred_gan.BlurredGAN(gen, disc, hyperparams=hyperparameters, config=train_config)
-
-    latest_checkpoint = tf.train.latest_checkpoint(log_dir)
-    if latest_checkpoint:
-        gan.load_weights(latest_checkpoint)
-        print("Loaded model weights from previous checkpoint:", latest_checkpoint)
+    
+    checkpoint = tf.train.Checkpoint(gan=gan)    
+    manager = tf.train.CheckpointManager(
+        checkpoint,
+        directory=checkpoint_dir,
+        max_to_keep=5,
+        keep_checkpoint_every_n_hours=1
+    )    
+    
+    if manager.latest_checkpoint:
+        status = checkpoint.restore(manager.latest_checkpoint)
+        status.assert_consumed()
+        gan.hparams = WGANHyperParameters.from_json(log_dir + "/hyper_parameters.json")
+        gan.config = TrainingConfig.from_json(log_dir + "/train_config.json")
+        print("Loaded model weights from previous checkpoint:", checkpoint)
         print(f"Model was previously trained on {gan.n_img.numpy()} images")
-        
-        gan.hparams = HyperParams.from_json(log_dir + "/hyper_parameters.json")
-        gan.config = TrainingConfig.from_json(log_dir + "/train_config.json")  
+    
+    print("Hparams:", gan.hparams)
+    print("Train config:", gan.config)
 
     gan.hparams.save_json(log_dir + "/hyper_parameters.json")
     gan.config.save_json(log_dir + "/train_config.json")
+    manager.save()
 
     metric_callbacks = [
         callbacks.FIDScoreCallback(
             image_preprocessing_fn=lambda img: tf.image.grayscale_to_rgb(tf.image.resize(img, [299, 299])),
             dataset_fn=make_dataset,
-            n=100,
+            num_samples=100,
             every_n_examples=10_000,
         ),
         callbacks.SWDCallback(
             image_preprocessing_fn=lambda img: utils.NHWC_to_NCHW(tf.image.grayscale_to_rgb(tf.convert_to_tensor(img))),
-            n=1000,
+            num_samples=1000,
             every_n_examples=10_000,
         ),
     ]
@@ -156,15 +169,14 @@ if __name__ == "__main__":
     gan.fit(
         x=dataset,
         y=None,
-        epochs=epochs,
+        epochs=1,
         initial_epoch=gan.n_img // total_n_examples,
         callbacks=[
-            tf.keras.callbacks.ModelCheckpoint(
-                filepath= log_dir + '/model_{epoch}.ckpt',
-                save_freq='epoch',
-                save_weights_only=False,
-            ),
-            # tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath, save_freq='epoch'),
+            # tf.keras.callbacks.ModelCheckpoint(
+            #     filepath = checkpoint_dir,
+            #     save_freq = (10_000//global_batch_size),
+            #     save_weights_only=False,
+            # ),
             tf.keras.callbacks.TensorBoard(
                 log_dir=log_dir,
                 update_freq=100,
@@ -182,6 +194,8 @@ if __name__ == "__main__":
             
             # heavy metric callbacks
             # *metric_callbacks,
+
+            callbacks.SaveModelCallback(manager, n=10_000),
         ]
     )
 

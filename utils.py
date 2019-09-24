@@ -104,10 +104,19 @@ def read_json(file_path: str) -> Dict:
             return json.load(f)
 
 
-class JsonSerializableMixin():
+from tensorflow.python.framework.ops import EagerTensor
+
+from dataclasses import dataclass
+from tensorflow.python.training.tracking.tracking import AutoTrackable
+
+class JsonSerializable():
     def asdict(self):
-        return dataclasses.asdict(self)
-    
+        d = dataclasses.asdict(self)
+        d_without_eager_tensors = dict({
+            k: float(v.numpy()) if isinstance(v, (tf.Variable, tf.Tensor, EagerTensor)) else v for k, v in d.items()
+        })
+        return d_without_eager_tensors
+
     def save_json(self, file_path: str) -> None:
         with open(file_path, 'w') as f:
             d = self.asdict()
@@ -117,3 +126,22 @@ class JsonSerializableMixin():
     def from_json(cls, file_path: str):
         d = read_json(file_path)
         return cls(**d)
+
+@dataclass
+class HyperParams(AutoTrackable, JsonSerializable):
+    """
+    Simple wrapper for a python dataclass which enables saving and restoring from Tensorflow checkpoints. 
+    Values are tracked using the `AutoTrackable` tensorflow class.
+    Note: under the hood, this makes a tf.constant out of each of the values of the dataclass.
+    """
+    def __setattr__(self, key, value):
+        v = value
+        if isinstance(value, (int, float)):
+            v = tf.constant(value)
+        super().__setattr__(key, v) 
+
+    def __repr__(self):
+        return self.asdict().__repr__()
+
+    def __str__(self):
+        return str(self.asdict())
