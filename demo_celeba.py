@@ -1,16 +1,18 @@
+import os
 import tensorflow as tf
 import tensorflow_datasets as tfds
 from tensorflow.keras import layers
 
 import blurred_gan
-from blurred_gan import WGANGP, HyperParams, TrainingConfig, BlurredGAN
-from callbacks import AdaptiveBlurController, BlurDecayController
+from blurred_gan import WGANGP, TrainingConfig, BlurredGAN
+import callbacks
+
+from tensorboard.plugins.hparams import api as hp
 
 import utils
-import os
-from os import environ
+import dataclasses
 
-def celeba_dataset(shuffle_buffer_size=100) -> tf.data.Dataset:
+def make_dataset(shuffle_buffer_size=100) -> tf.data.Dataset:
     """Modern Tensorflow input pipeline for the CelebA dataset"""
 
     @tf.function
@@ -32,7 +34,7 @@ def celeba_dataset(shuffle_buffer_size=100) -> tf.data.Dataset:
         image = resize_image(image)
         return image
 
-    data_dir = environ.get("DATASETS_DIR", "/tmp/datasets")
+    data_dir = os.environ.get("DATASETS_DIR", "/tmp/datasets")
     celeba_dataset = tfds.load(name="celeb_a", data_dir=data_dir, split=tfds.Split.ALL)
     celeba = (celeba_dataset
               .map(take_image)
@@ -131,49 +133,116 @@ if __name__ == "__main__":
 
     epochs = 10
     batch_size_per_gpu = 32
-    
-    log_dir = utils.create_result_subdir("results", "celeba")
-    checkpoint_filepath = log_dir + '/model_{epoch}.h5'
 
-    train_config = TrainingConfig(
-        log_dir=log_dir,
-    )
-    
-    # strategy = tf.distribute.CentralStorageStrategy()
+   
+
     num_gpus = 1 #strategy.num_replicas_in_sync
     print("Num gpus:", num_gpus)
 
     # Compute global batch size using number of replicas.
     global_batch_size = batch_size_per_gpu * num_gpus
-    dataset = celeba_dataset().batch(global_batch_size)
-
+    dataset = make_dataset().batch(global_batch_size)
 
     total_n_examples = 202_599
     steps_per_epoch = total_n_examples // global_batch_size
 
-    # with strategy.scope():
-    gen = DCGANGenerator()
-    disc = DCGANDiscriminator()
+    results_dir = "results"
 
-    hyperparameters = HyperParams(
+    resume_run_id = 2
+    log_dir = f"{results_dir}/{resume_run_id:02}-celeba"
+    checkpoint_dir = log_dir + "/checkpoints"
+    
+    train_config = TrainingConfig(
+        log_dir=log_dir,
+        checkpoint_dir=checkpoint_dir,
+        save_image_summaries_interval=50,
+    )
+    hyperparameters = BlurredGAN.HyperParameters(
         d_steps_per_g_step=1,
         gp_coefficient=10.0,
         learning_rate=0.001,
-        initial_blur_std=23.5,
+        initial_blur_std=0.01 # effectively no blur
     )
 
-    gan = WGANGP(gen, disc, hyperparams=hyperparameters, config=train_config)
-    gan.summary()
+    gen = DCGANGenerator()
+    disc = DCGANDiscriminator()
+    gan = blurred_gan.BlurredGAN(gen, disc, hyperparams=hyperparameters, config=train_config)
+    
+    checkpoint = tf.train.Checkpoint(gan=gan)    
+    manager = tf.train.CheckpointManager(
+        checkpoint,
+        directory=checkpoint_dir,
+        max_to_keep=5,
+        keep_checkpoint_every_n_hours=1
+    )    
+    
+    if manager.latest_checkpoint:
+        status = checkpoint.restore(manager.latest_checkpoint)
+        status.assert_existing_objects_matched()
+        gan.hparams = BlurredGAN.HyperParameters.from_json(log_dir + "/hyper_parameters.json")
+        gan.config = TrainingConfig.from_json(log_dir + "/train_config.json")
+        print("Loaded model weights from previous checkpoint:", checkpoint)
+        print(f"Model was previously trained on {gan.n_img.numpy()} images")
+    
+    print("Hparams:", gan.hparams)
+    print("Train config:", gan.config)
+
+    gan.hparams.save_json(log_dir + "/hyper_parameters.json")
+    gan.config.save_json(log_dir + "/train_config.json")
+
+    # manager.save()
+
+    metric_callbacks = [
+        callbacks.FIDScoreCallback(
+            image_preprocessing_fn=lambda img: tf.image.grayscale_to_rgb(tf.image.resize(img, [299, 299])),
+            dataset_fn=make_dataset,
+            num_samples=100,
+            every_n_examples=10_000,
+        ),
+        callbacks.SWDCallback(
+            image_preprocessing_fn=lambda img: utils.NHWC_to_NCHW(tf.image.grayscale_to_rgb(tf.convert_to_tensor(img))),
+            num_samples=1000,
+            every_n_examples=10_000,
+        ),
+    ]
+
     gan.fit(
         x=dataset,
         y=None,
         epochs=epochs,
-        steps_per_epoch=202_599 // global_batch_size,
+        initial_epoch=gan.n_img // total_n_examples,
         callbacks=[
-            tf.keras.callbacks.ModelCheckpoint(filepath=checkpoint_filepath, save_freq=100_000),
-            tf.keras.callbacks.TensorBoard(log_dir=log_dir, update_freq=100, profile_batch=0), # BUG: profile_batch=0 was put there to fix Tensorboard not updating correctly. 
-            utils.GenerateSampleGridFigureCallback(log_dir=log_dir, period_batches=1000),
-            AdaptiveBlurController(), # FIXME: this controller is not yet operational.
-            BlurDecayController(total_n_training_examples=steps_per_epoch * epochs)
+            tf.keras.callbacks.TensorBoard(
+                log_dir=log_dir,
+                update_freq=100,
+                profile_batch=0, # BUG: profile_batch=0 was put there to fix Tensorboard not updating correctly. 
+            ),
+            # log the hyperparameters used for this run
+            hp.KerasCallback(log_dir, hyperparameters.asdict()),
+
+            # generate a grid of samples
+            callbacks.GenerateSampleGridCallback(log_dir=log_dir, every_n_examples=5_000),
+
+            # # FIXME: these controllers need to be cleaned up a tiny bit.
+            # AdaptiveBlurController(max_value=hyperparameters.initial_blur_std),
+            # BlurDecayController(total_n_training_examples=steps_per_epoch * epochs, max_value=hyperparameters.initial_blur_std),
+            
+            # heavy metric callbacks
+            # *metric_callbacks,
+
+            callbacks.SaveModelCallback(manager, n=10_000),
         ]
     )
+
+    # Save the model
+    manager.save()
+    print("Done training.")
+
+
+    samples = gan.generate_samples()
+    import numpy as np
+    x = np.reshape(samples[0].numpy(), [28, 28])
+    print(x.shape)
+    plt.imshow(x, cmap="gray")
+    plt.show()
+    exit()

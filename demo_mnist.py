@@ -1,13 +1,10 @@
 import os
-os.environ["AUTOGRAPH_VERBOSITY"] = "0"
-
-
 import tensorflow as tf
 import tensorflow_datasets as tfds
 from tensorflow.keras import layers
 
 import blurred_gan
-from blurred_gan import WGANGP, TrainingConfig, WGANHyperParameters, WGANGP_HyperParameters, Blurred_GAN_HyperParameters
+from blurred_gan import WGANGP, TrainingConfig, BlurredGAN
 import callbacks
 
 from tensorboard.plugins.hparams import api as hp
@@ -32,9 +29,7 @@ def make_dataset(shuffle_buffer_size=256) -> tf.data.Dataset:
         image = convert_to_float(image)
         return image
 
-    import os
-    from os import environ
-    data_dir = environ.get("DATASETS_DIR", "/tmp/datasets")
+    data_dir = os.environ.get("DATASETS_DIR", "/tmp/datasets")
     dataset = tfds.load(name="mnist", data_dir=data_dir, split=tfds.Split.TRAIN, shuffle_files=False)
 
     dataset = (dataset
@@ -125,7 +120,7 @@ if __name__ == "__main__":
         checkpoint_dir=checkpoint_dir,
         save_image_summaries_interval=50,
     )
-    hyperparameters = Blurred_GAN_HyperParameters(
+    hyperparameters = BlurredGAN.HyperParameters(
         d_steps_per_g_step=1,
         gp_coefficient=10.0,
         learning_rate=0.001,
@@ -147,7 +142,7 @@ if __name__ == "__main__":
     if manager.latest_checkpoint:
         status = checkpoint.restore(manager.latest_checkpoint)
         status.assert_existing_objects_matched()
-        gan.hparams = WGANHyperParameters.from_json(log_dir + "/hyper_parameters.json")
+        gan.hparams = BlurredGAN.HyperParameters.from_json(log_dir + "/hyper_parameters.json")
         gan.config = TrainingConfig.from_json(log_dir + "/train_config.json")
         print("Loaded model weights from previous checkpoint:", checkpoint)
         print(f"Model was previously trained on {gan.n_img.numpy()} images")

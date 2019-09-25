@@ -11,14 +11,6 @@ from gaussian_blur import GaussianBlur2D
 from utils import JsonSerializable
 
 
-
-
-@dataclass
-class WGANHyperParameters(JsonSerializable):
-    d_steps_per_g_step: int = 1
-    learning_rate: float = 0.001
-    
-
 @dataclass
 class TrainingConfig(JsonSerializable):
     log_dir: str
@@ -26,28 +18,18 @@ class TrainingConfig(JsonSerializable):
     save_image_summaries_interval: int = 50
 
 
-@tf.function()
-def gradient_penalty(discriminator, reals, fakes):
-    batch_size = reals.shape[0]
-    a = tf.random.uniform([batch_size, 1, 1, 1])
-    x_hat = a * reals + (1-a) * fakes
-
-    with tf.GradientTape() as tape:
-        tape.watch(x_hat)
-        y_hat = discriminator(x_hat, training=False)
-
-    grad = tape.gradient(y_hat, x_hat)
-    norm = tf.norm(tf.reshape(grad, [batch_size, -1]), axis=1)
-    return tf.reduce_mean((norm - 1.)**2)
-
-
-
 class WGAN(tf.keras.Model):
     """
     Wasserstein GAN with Gradient Penalty.
    
     """
-    def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, hyperparams: WGANHyperParameters, config: TrainingConfig, *args, **kwargs):
+        
+    @dataclass
+    class HyperParameters(JsonSerializable):
+        d_steps_per_g_step: int = 1
+        learning_rate: float = 0.001
+    
+    def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, hyperparams: HyperParameters, config: TrainingConfig, *args, **kwargs):
         """
         Creates the GAN, using the given `generator` and `discriminator` models.
         """
@@ -59,7 +41,7 @@ class WGAN(tf.keras.Model):
         self.discriminator.optimizer = tf.keras.optimizers.Adam(learning_rate=hyperparams.learning_rate)
 
         # hyperparameters
-        self.hparams: WGANHyperParameters = hyperparams
+        self.hparams: WGAN.HyperParameters = hyperparams
         # number of discriminator steps per generator step.
         self.d_steps_per_g_step = self.hparams.d_steps_per_g_step
         self.batch_size = None # will be determined dynamically when trained.
@@ -142,7 +124,10 @@ class WGAN(tf.keras.Model):
 
         self.batch_size = reals.shape[0]
         tf.summary.experimental.set_step(self.n_img)
-
+        # TODO: Wrap this with summary_writer.as_default() when we should keep
+        # the summaries and with a no_op contextmanager when we shouldn't.
+        # (ALSO test if the summaries are written when in the discriminator step
+        # is executed in graph mode.)
         disc_loss, images = self.discriminator_step(reals)
         self.images = images
 
@@ -186,41 +171,57 @@ class WGAN(tf.keras.Model):
         self.generator.save_weights(filepath+"_generator", overwrite, save_format)
 
 
-@dataclass
-class WGANGP_HyperParameters(WGANHyperParameters):
-    """Coefficient from the progan authors which penalizes critic outputs for having a large magnitude."""
-    e_drift: float = 1e-4
-    gp_coefficient: float = 10.0
+@tf.function()
+def gradient_penalty(discriminator, reals, fakes):
+    batch_size = reals.shape[0]
+    a = tf.random.uniform([batch_size, 1, 1, 1])
+    x_hat = a * reals + (1-a) * fakes
+
+    with tf.GradientTape() as tape:
+        tape.watch(x_hat)
+        y_hat = discriminator(x_hat, training=False)
+
+    grad = tape.gradient(y_hat, x_hat)
+    norm = tf.norm(tf.reshape(grad, [batch_size, -1]), axis=1)
+    return tf.reduce_mean((norm - 1.)**2)
+
 
 class WGANGP(WGAN):
     """
     Wasserstein GAN with Gradient Penalty loss
     """
-    def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, hyperparams: WGANGP_HyperParameters, config: TrainingConfig, *args, **kwargs):
+
+    @dataclass
+    class HyperParameters(WGAN.HyperParameters):
+        """Hyperparameters of a WGAN model with Gradient Penalty loss."""
+        """Coefficient from the progan authors which penalizes critic outputs for having a large magnitude."""
+        e_drift: float = 1e-4
+        """Multiplying coefficient for the gradient penalty term of the loss equation. (10.0 is the default value, and was used by the PROGAN authors.)"""
+        gp_coefficient: float = 10.0
+
+    def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, hyperparams: HyperParameters, config: TrainingConfig, *args, **kwargs):
         """
-        Creates the GAN, using the given `generator` and `discriminator` models.
+        Creates the model, using the given `generator` and `discriminator` models.
         """
         super().__init__(generator, discriminator, hyperparams, config, *args, **kwargs)
         self.gp_term_metric = tf.keras.metrics.Mean("gp_term", dtype=tf.float32)
+        self.norm_term_metric = tf.keras.metrics.Mean("norm_term", dtype=tf.float32)
 
     @tf.function
     def discriminator_loss(self, reals, fakes, real_scores, fake_scores):
         disc_loss = super().discriminator_loss(reals, fakes, real_scores, fake_scores)
         
         # Gradient penalty addition.
-        gp_term =  self.hparams.gp_coefficient * gradient_penalty(self.discriminator, reals, fakes)
-        disc_loss += gp_term
+        gp_term = self.hparams.gp_coefficient * gradient_penalty(self.discriminator, reals, fakes)
         self.gp_term_metric(gp_term)
+        disc_loss += gp_term
 
         # We use the same norm term from the ProGAN authors.
         norm_term = self.hparams.e_drift * (tf.norm(fake_scores, axis=-1) + tf.norm(real_scores, axis=-1))
+        self.norm_term_metric(norm_term)
         disc_loss += norm_term
         return disc_loss
 
-
-@dataclass
-class Blurred_GAN_HyperParameters(WGANGP_HyperParameters):
-    initial_blur_std: float = 23.5
 
 class BlurredGAN(WGANGP):
     """
@@ -228,7 +229,12 @@ class BlurredGAN(WGANGP):
     TODO:
     Maybe the hyperparameter classes could also be inside the corresponding GAN classes..
     """
-    def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, hyperparams: Blurred_GAN_HyperParameters, config: TrainingConfig, **kwargs):
+
+    @dataclass
+    class HyperParameters(WGANGP.HyperParameters):
+        initial_blur_std: float = 23.5
+
+    def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, hyperparams: HyperParameters, config: TrainingConfig, **kwargs):
         blur = GaussianBlur2D(initial_std=hyperparams.initial_blur_std, input_shape=discriminator.input_shape[1:])
         discriminator_with_blur = tf.keras.Sequential([
             blur,
