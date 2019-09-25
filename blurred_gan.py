@@ -10,16 +10,14 @@ import json
 from gaussian_blur import GaussianBlur2D
 from utils import JsonSerializable
 
+
+
+
 @dataclass
 class WGANHyperParameters(JsonSerializable):
     d_steps_per_g_step: int = 1
-    gp_coefficient: float = 10.0
     learning_rate: float = 0.001
     
-    initial_blur_std: float = 23.5
-
-    """Coefficient from the progan authors which penalizes critic outputs for having a large magnitude."""
-    e_drift: float = 1e-4
 
 @dataclass
 class TrainingConfig(JsonSerializable):
@@ -42,7 +40,9 @@ def gradient_penalty(discriminator, reals, fakes):
     norm = tf.norm(tf.reshape(grad, [batch_size, -1]), axis=1)
     return tf.reduce_mean((norm - 1.)**2)
 
-class WGANGP(tf.keras.Model):
+
+
+class WGAN(tf.keras.Model):
     """
     Wasserstein GAN with Gradient Penalty.
    
@@ -59,28 +59,22 @@ class WGANGP(tf.keras.Model):
         self.discriminator.optimizer = tf.keras.optimizers.Adam(learning_rate=hyperparams.learning_rate)
 
         # hyperparameters
-        self.hparams: HyperParams = hyperparams
-        self.gp_coefficient = self.hparams.gp_coefficient
+        self.hparams: WGANHyperParameters = hyperparams
         # number of discriminator steps per generator step.
         self.d_steps_per_g_step = self.hparams.d_steps_per_g_step
         self.batch_size = None # will be determined dynamically when trained.
         
         self.config = config
-        self.log_dir = config.log_dir
         self.summary_writer = tf.summary.create_file_writer(config.log_dir)
         # used to keep track of progress
         self.n_img = tf.Variable(0, dtype=tf.int64, trainable=False, name="n_img")
         self.n_batches = tf.Variable(0, dtype=tf.int64, trainable=False, name="n_batches")
         
         # Keras metrics to be showed during training.
-        self.real_scores = tf.keras.metrics.Mean("real_scores", dtype=tf.float32)
-        self.fake_scores = tf.keras.metrics.Mean("fake_scores", dtype=tf.float32)
-        self.gp_term = tf.keras.metrics.Mean("gp_term", dtype=tf.float32)
-        self.gen_loss = tf.keras.metrics.Mean("gen_loss", dtype=tf.float32)
-        self.disc_loss = tf.keras.metrics.Mean("disc_loss", dtype=tf.float32)
-        
-        #TODO: remove later
-        # self.std_metric = tf.keras.metrics.Mean("std", dtype=tf.float32)
+        self.real_scores_metric = tf.keras.metrics.Mean("real_scores", dtype=tf.float32)
+        self.fake_scores_metric = tf.keras.metrics.Mean("fake_scores", dtype=tf.float32)
+        self.gen_loss_metric = tf.keras.metrics.Mean("gen_loss", dtype=tf.float32)
+        self.disc_loss_metric = tf.keras.metrics.Mean("disc_loss", dtype=tf.float32)
         
         # BUG: for some reason, a model needs a non-None value for the 'optimizer' attribute before it can be trained with the .fit method.
         self.optimizer = "unused"
@@ -96,59 +90,47 @@ class WGANGP(tf.keras.Model):
         return self.generator(latents, training=training)
 
     @tf.function
+    def discriminator_loss(self, reals, fakes, real_scores, fake_scores):
+        return tf.reduce_mean(fake_scores - real_scores)
+
+    @tf.function
     def discriminator_step(self, reals):
         with tf.GradientTape() as disc_tape:
             fakes = self.generate_samples(training=False)
-            blurred_reals = reals
-            blurred_fakes = fakes
-            # blurred_reals = self.blur(reals)
-            # blurred_fakes = self.blur(fakes)
-
-            fake_scores = self.discriminator(blurred_fakes, training=True)
-            real_scores = self.discriminator(blurred_reals, training=True)
-            disc_loss = tf.reduce_mean(fake_scores - real_scores)
-
-            # Gradient penalty addition.
-            gp_term = gradient_penalty(self.discriminator, reals, fakes)
-            disc_loss += self.gp_coefficient * gp_term
-
-            # We use the same norm term from the ProGAN authors.
-            norm_term = (tf.norm(fake_scores, axis=-1) + tf.norm(real_scores, axis=-1))
-            disc_loss += self.hparams.e_drift * norm_term
+            fake_scores = self.discriminator(fakes, training=True)
+            real_scores = self.discriminator(reals, training=True)
+            disc_loss = self.discriminator_loss(reals, fakes, real_scores, fake_scores)
         
         discriminator_grads = disc_tape.gradient(disc_loss, self.discriminator.trainable_variables)
         self.discriminator.optimizer.apply_gradients(zip(discriminator_grads, self.discriminator.trainable_variables))
-       
         # save metrics.
-        self.fake_scores(fake_scores)
-        self.real_scores(real_scores)
-        self.gp_term(gp_term)
-        self.disc_loss(disc_loss)
-
-        # TODO: remove later
-        # self.std_metric(self.std)
+        self.fake_scores_metric(fake_scores)
+        self.real_scores_metric(real_scores)
+        self.disc_loss_metric(disc_loss)
 
         # images to be added as a summary
         # BUG: Currently, it seems like we can't have image summaries inside a tf.function (graph). (not thoroughly tested this yet.)
         # hence we pass the images outside of this 'graphified' function.
-        images = (fakes, reals, blurred_fakes, blurred_reals)
+        images = (fakes, reals)
         return disc_loss, images
+
+    @tf.function
+    def generator_loss(self, fake_scores):
+        return - tf.reduce_mean(fake_scores)
 
     @tf.function
     def generator_step(self):
         with tf.GradientTape() as gen_tape:
             fakes = self.generate_samples(training=True)
-            # blurred_fakes = fakes
-            blurred_fakes = self.blur(fakes)
-            fake_scores = self.discriminator(blurred_fakes, training=False)
-            gen_loss = - tf.reduce_mean(fake_scores)
-
-        # save metrics.
-        self.fake_scores(fake_scores)
-        self.gen_loss(gen_loss)
-
+            fake_scores = self.discriminator(fakes, training=False)
+            gen_loss = self.generator_loss(fake_scores)
+        
         generator_grads = gen_tape.gradient(gen_loss, self.generator.trainable_variables)
         self.generator.optimizer.apply_gradients(zip(generator_grads, self.generator.trainable_variables))
+        
+        # save metrics.
+        self.fake_scores_metric(fake_scores)
+        self.gen_loss_metric(gen_loss)
         return gen_loss
 
     # @tf.function
@@ -185,12 +167,9 @@ class WGANGP(tf.keras.Model):
 
     def log_image_summaries(self):
         with tf.device("cpu"), self.summary_writer.as_default():
-            fakes, reals, blurred_fakes, blurred_reals = self.images
+            fakes, reals = self.images
             tf.summary.image("fakes", fakes)
             tf.summary.image("reals", reals)
-            tf.summary.image("blurred_fakes", blurred_fakes)
-            tf.summary.image("blurred_reals", blurred_reals)
-            # self.summary_writer.flush()
     
     def summary(self):
         print("Discriminator:")
@@ -206,25 +185,59 @@ class WGANGP(tf.keras.Model):
         self.discriminator.save_weights(filepath+"_discriminator", overwrite, save_format)
         self.generator.save_weights(filepath+"_generator", overwrite, save_format)
 
-    # @property
-    # def std(self):
-    #     return self.blur.std
+
+@dataclass
+class WGANGP_HyperParameters(WGANHyperParameters):
+    """Coefficient from the progan authors which penalizes critic outputs for having a large magnitude."""
+    e_drift: float = 1e-4
+    gp_coefficient: float = 10.0
+
+class WGANGP(WGAN):
+    """
+    Wasserstein GAN with Gradient Penalty loss
+    """
+    def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, hyperparams: WGANGP_HyperParameters, config: TrainingConfig, *args, **kwargs):
+        """
+        Creates the GAN, using the given `generator` and `discriminator` models.
+        """
+        super().__init__(generator, discriminator, hyperparams, config, *args, **kwargs)
+        self.gp_term_metric = tf.keras.metrics.Mean("gp_term", dtype=tf.float32)
+
+    @tf.function
+    def discriminator_loss(self, reals, fakes, real_scores, fake_scores):
+        disc_loss = super().discriminator_loss(reals, fakes, real_scores, fake_scores)
+        
+        # Gradient penalty addition.
+        gp_term =  self.hparams.gp_coefficient * gradient_penalty(self.discriminator, reals, fakes)
+        disc_loss += gp_term
+        self.gp_term_metric(gp_term)
+
+        # We use the same norm term from the ProGAN authors.
+        norm_term = self.hparams.e_drift * (tf.norm(fake_scores, axis=-1) + tf.norm(real_scores, axis=-1))
+        disc_loss += norm_term
+        return disc_loss
+
+
+@dataclass
+class Blurred_GAN_HyperParameters(WGANGP_HyperParameters):
+    initial_blur_std: float = 23.5
 
 class BlurredGAN(WGANGP):
     """
-    IDEA: Simple variation on the WGAN-GP (or any GAN architecture, for that matter) where we added the blurring layer in the discriminator    
+    IDEA: Simple variation on the WGAN-GP (or any GAN architecture, for that matter) where we added the blurring layer in the discriminator.
+    TODO:
+    Maybe the hyperparameter classes could also be inside the corresponding GAN classes..
     """
-    def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, hyperparams: WGANHyperParameters, config: TrainingConfig, **kwargs):
+    def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, hyperparams: Blurred_GAN_HyperParameters, config: TrainingConfig, **kwargs):
         blur = GaussianBlur2D(initial_std=hyperparams.initial_blur_std, input_shape=discriminator.input_shape[1:])
         discriminator_with_blur = tf.keras.Sequential([
-            # tf.keras.layers.InputLayer(input_shape=discriminator.input_shape[1:]),
             blur,
             discriminator,
         ])
         super().__init__(generator, discriminator_with_blur, hyperparams=hyperparams, config=config, **kwargs)
         self.blur = blur
         self.std_metric = tf.keras.metrics.Mean("std", dtype=tf.float32)
-
+    
     @property
     def std(self):
         return self.blur.std
@@ -233,4 +246,4 @@ class BlurredGAN(WGANGP):
         with self.summary_writer.as_default():
             disc_loss, images = super().discriminator_step(reals)
             self.std_metric(self.std) # add this 'std' metric
-            return disc_loss, images
+        return disc_loss, images

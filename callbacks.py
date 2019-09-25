@@ -219,10 +219,12 @@ class SWDCallback(ExecuteEveryNExamplesCallback):
 
 
 class GenerateSampleGridCallback(ExecuteEveryNExamplesCallback):
-    def __init__(self, log_dir: str, show_blurred_samples=True, every_n_examples=1000):
+    def __init__(self, log_dir: str, show_blurred_samples=True, every_n_examples=1000, also_save_files=True):
         self.log_dir = log_dir
         self.show_blurred_samples = show_blurred_samples
         super().__init__(n=every_n_examples)
+
+        self.also_save_files = also_save_files
 
         # we need a constant random vector which will not change over the course of training. 
         self.latents: np.ndarray = None
@@ -240,6 +242,7 @@ class GenerateSampleGridCallback(ExecuteEveryNExamplesCallback):
 
         samples = utils.normalize_images(samples)
         figure = utils.samples_grid(samples)  # TODO: write figure to a file?
+        figure.savefig(self.log_dir + f"/samples_grid_{self.samples_seen:06}.png")
         image = utils.plot_to_image(figure)
         with self.model.summary_writer.as_default():
             tf.summary.image("samples_grid", image)

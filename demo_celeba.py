@@ -7,7 +7,8 @@ from blurred_gan import WGANGP, HyperParams, TrainingConfig, BlurredGAN
 from callbacks import AdaptiveBlurController, BlurDecayController
 
 import utils
-
+import os
+from os import environ
 
 def celeba_dataset(shuffle_buffer_size=100) -> tf.data.Dataset:
     """Modern Tensorflow input pipeline for the CelebA dataset"""
@@ -30,8 +31,7 @@ def celeba_dataset(shuffle_buffer_size=100) -> tf.data.Dataset:
         image = normalize(image)
         image = resize_image(image)
         return image
-    import os
-    from os import environ
+
     data_dir = environ.get("DATASETS_DIR", "/tmp/datasets")
     celeba_dataset = tfds.load(name="celeb_a", data_dir=data_dir, split=tfds.Split.ALL)
     celeba = (celeba_dataset

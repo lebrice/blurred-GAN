@@ -1,9 +1,13 @@
+import os
+os.environ["AUTOGRAPH_VERBOSITY"] = "0"
+
+
 import tensorflow as tf
 import tensorflow_datasets as tfds
 from tensorflow.keras import layers
 
 import blurred_gan
-from blurred_gan import WGANGP, TrainingConfig, WGANHyperParameters
+from blurred_gan import WGANGP, TrainingConfig, WGANHyperParameters, WGANGP_HyperParameters, Blurred_GAN_HyperParameters
 import callbacks
 
 from tensorboard.plugins.hparams import api as hp
@@ -28,7 +32,10 @@ def make_dataset(shuffle_buffer_size=256) -> tf.data.Dataset:
         image = convert_to_float(image)
         return image
 
-    dataset = tfds.load(name="mnist", split=tfds.Split.TRAIN)
+    import os
+    from os import environ
+    data_dir = environ.get("DATASETS_DIR", "/tmp/datasets")
+    dataset = tfds.load(name="mnist", data_dir=data_dir, split=tfds.Split.TRAIN, shuffle_files=False)
 
     dataset = (dataset
         .map(take_image)
@@ -109,7 +116,7 @@ if __name__ == "__main__":
 
     results_dir = "results"
 
-    resume_run_id = 1
+    resume_run_id = 2
     log_dir = f"{results_dir}/{resume_run_id:02}-mnist"
     checkpoint_dir = log_dir + "/checkpoints"
     
@@ -118,7 +125,7 @@ if __name__ == "__main__":
         checkpoint_dir=checkpoint_dir,
         save_image_summaries_interval=50,
     )
-    hyperparameters = WGANHyperParameters(
+    hyperparameters = Blurred_GAN_HyperParameters(
         d_steps_per_g_step=1,
         gp_coefficient=10.0,
         learning_rate=0.001,
@@ -139,7 +146,7 @@ if __name__ == "__main__":
     
     if manager.latest_checkpoint:
         status = checkpoint.restore(manager.latest_checkpoint)
-        status.assert_consumed()
+        status.assert_existing_objects_matched()
         gan.hparams = WGANHyperParameters.from_json(log_dir + "/hyper_parameters.json")
         gan.config = TrainingConfig.from_json(log_dir + "/train_config.json")
         print("Loaded model weights from previous checkpoint:", checkpoint)
@@ -150,7 +157,8 @@ if __name__ == "__main__":
 
     gan.hparams.save_json(log_dir + "/hyper_parameters.json")
     gan.config.save_json(log_dir + "/train_config.json")
-    manager.save()
+
+    # manager.save()
 
     metric_callbacks = [
         callbacks.FIDScoreCallback(
@@ -169,7 +177,7 @@ if __name__ == "__main__":
     gan.fit(
         x=dataset,
         y=None,
-        epochs=1,
+        epochs=epochs,
         initial_epoch=gan.n_img // total_n_examples,
         callbacks=[
             # tf.keras.callbacks.ModelCheckpoint(
