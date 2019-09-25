@@ -112,10 +112,13 @@ from tensorflow.python.training.tracking.tracking import AutoTrackable
 class JsonSerializable():
     def asdict(self):
         d = dataclasses.asdict(self)
-        d_without_eager_tensors = dict({
-            k: float(v.numpy()) if isinstance(v, (tf.Variable, tf.Tensor, EagerTensor)) else v for k, v in d.items()
-        })
-        return d_without_eager_tensors
+        d_without_tf_objects = {}
+        for k, v in d.items():
+            if isinstance(v, (tf.Variable, tf.Tensor, EagerTensor)):
+                d_without_tf_objects[k] = float(v.numpy())
+            else:
+                d_without_tf_objects[k] = v
+        return d_without_tf_objects
 
     def save_json(self, file_path: str) -> None:
         with open(file_path, 'w') as f:

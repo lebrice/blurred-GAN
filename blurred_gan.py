@@ -1,14 +1,16 @@
 import tensorflow as tf
 import matplotlib.pyplot as plt
-from typing import Callable
+from typing import *
 from enum import Enum
 import dataclasses
-from dataclasses import dataclass
+from dataclasses import dataclass, InitVar, field
 import os
 import json
 
 from gaussian_blur import GaussianBlur2D
 from utils import JsonSerializable
+
+from contextlib import contextmanager
 
 
 @dataclass
@@ -27,21 +29,29 @@ class WGAN(tf.keras.Model):
     @dataclass
     class HyperParameters(JsonSerializable):
         d_steps_per_g_step: int = 1
+        batch_size: int = 32
+        global_batch_size: int = 32
         learning_rate: float = 0.001
+        optimizer: str = "adam"
     
+
     def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, hyperparams: HyperParameters, config: TrainingConfig, *args, **kwargs):
         """
         Creates the GAN, using the given `generator` and `discriminator` models.
         """
         super().__init__(*args, **kwargs)
-        self.generator = generator 
-        self.generator.optimizer = tf.keras.optimizers.Adam(learning_rate=hyperparams.learning_rate)
-
-        self.discriminator = discriminator
-        self.discriminator.optimizer = tf.keras.optimizers.Adam(learning_rate=hyperparams.learning_rate)
-
         # hyperparameters
         self.hparams: WGAN.HyperParameters = hyperparams
+        
+
+        self.generator = generator 
+        self.generator.optimizer = tf.keras.optimizers.get(self.hparams.optimizer)
+        self.generator.optimizer.learning_rate = self.hparams.learning_rate
+
+        self.discriminator = discriminator
+        self.discriminator.optimizer = tf.keras.optimizers.get(self.hparams.optimizer)
+        self.discriminator.optimizer.learning_rate = self.hparams.learning_rate
+
         # number of discriminator steps per generator step.
         self.d_steps_per_g_step = self.hparams.d_steps_per_g_step
         self.batch_size = None # will be determined dynamically when trained.
@@ -134,8 +144,7 @@ class WGAN(tf.keras.Model):
         if tf.equal(self.n_batches % self.d_steps_per_g_step, 0):
             self.generator_step()
         
-        if tf.equal(self.n_batches % self.config.save_image_summaries_interval, 0):
-            self.log_image_summaries()
+        self.log_image_summaries()
 
         batch_size = reals.shape[0]
         self.n_img.assign_add(batch_size)
@@ -151,7 +160,7 @@ class WGAN(tf.keras.Model):
         return metric_results
 
     def log_image_summaries(self):
-        with tf.device("cpu"), self.summary_writer.as_default():
+        with self.record_image_summaries():
             fakes, reals = self.images
             tf.summary.image("fakes", fakes)
             tf.summary.image("reals", reals)
@@ -163,6 +172,23 @@ class WGAN(tf.keras.Model):
         self.generator.summary()
         print(f"Total params: {self.count_params():,}")
 
+    @tf.function
+    def _saving_image_summaries(self) -> bool:
+        """
+        Returns True if image summaries should be saved for the current batch.
+        """
+        return tf.equal(self.n_batches % self.config.save_image_summaries_interval, 0)
+
+    @contextmanager
+    def record_image_summaries(self):
+        """
+        Context manager that enables the recording of image summaries once every `self.config.save_image_summaries_interval` batches.
+        """
+        with tf.device("cpu"), self.summary_writer.as_default():
+            with tf.summary.record_if(self._saving_image_summaries):
+                yield
+
+
     def count_params(self):
         return self.discriminator.count_params() + self.generator.count_params()
 
@@ -173,10 +199,10 @@ class WGAN(tf.keras.Model):
 
 @tf.function()
 def gradient_penalty(discriminator, reals, fakes):
-    batch_size = reals.shape[0]
+    batch_size = tf.shape(reals)[0]
     a = tf.random.uniform([batch_size, 1, 1, 1])
-    x_hat = a * reals + (1-a) * fakes
-
+    # x_hat = a * reals + (1-a) * fakes
+    x_hat = reals + a * (fakes - reals)
     with tf.GradientTape() as tape:
         tape.watch(x_hat)
         y_hat = discriminator(x_hat, training=False)
@@ -191,6 +217,7 @@ class WGANGP(WGAN):
     Wasserstein GAN with Gradient Penalty loss
     """
 
+
     @dataclass
     class HyperParameters(WGAN.HyperParameters):
         """Hyperparameters of a WGAN model with Gradient Penalty loss."""
@@ -198,6 +225,7 @@ class WGANGP(WGAN):
         e_drift: float = 1e-4
         """Multiplying coefficient for the gradient penalty term of the loss equation. (10.0 is the default value, and was used by the PROGAN authors.)"""
         gp_coefficient: float = 10.0
+
 
     def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, hyperparams: HyperParameters, config: TrainingConfig, *args, **kwargs):
         """
@@ -247,9 +275,10 @@ class BlurredGAN(WGANGP):
     @property
     def std(self):
         return self.blur.std
-    
+
     def discriminator_step(self, reals):
-        with self.summary_writer.as_default():
+        with self.record_image_summaries():
             disc_loss, images = super().discriminator_step(reals)
-            self.std_metric(self.std) # add this 'std' metric
+
+        self.std_metric(self.std) # add this 'std' metric
         return disc_loss, images

@@ -98,7 +98,7 @@ if __name__ == "__main__":
     batch_size_per_gpu = 32
 
    
-
+    
     num_gpus = 1 #strategy.num_replicas_in_sync
     print("Num gpus:", num_gpus)
 
@@ -137,21 +137,24 @@ if __name__ == "__main__":
         directory=checkpoint_dir,
         max_to_keep=5,
         keep_checkpoint_every_n_hours=1
-    )    
-    
+    )
+
+    hparams_file_path = os.path.join(log_dir, "hyper_parameters.json")
+    train_config_file_path = os.path.join(log_dir, "train_config.json")
+
     if manager.latest_checkpoint:
         status = checkpoint.restore(manager.latest_checkpoint)
         status.assert_existing_objects_matched()
-        gan.hparams = BlurredGAN.HyperParameters.from_json(log_dir + "/hyper_parameters.json")
-        gan.config = TrainingConfig.from_json(log_dir + "/train_config.json")
+        gan.hparams = BlurredGAN.HyperParameters.from_json(hparams_file_path)
+        gan.config = TrainingConfig.from_json(train_config_file_path)
         print("Loaded model weights from previous checkpoint:", checkpoint)
         print(f"Model was previously trained on {gan.n_img.numpy()} images")
     
     print("Hparams:", gan.hparams)
     print("Train config:", gan.config)
 
-    gan.hparams.save_json(log_dir + "/hyper_parameters.json")
-    gan.config.save_json(log_dir + "/train_config.json")
+    gan.hparams.save_json(hparams_file_path)
+    gan.config.save_json(train_config_file_path)
 
     # manager.save()
 
