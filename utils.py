@@ -6,6 +6,7 @@ from io import BytesIO
 from typing import *
 import dataclasses
 import json
+import argparse
 
 def create_result_subdir(result_dir: str, run_name: str) -> str:
     import glob
@@ -130,6 +131,45 @@ class JsonSerializable():
         d = read_json(file_path)
         return cls(**d)
 
+
+class ParseableFromCommandLine:
+    """
+    When applied to a dataclass, this enables creating an instance of that class and populating the attributes from the command-line.
+    """
+    @classmethod
+    def add_cmd_args(cls, parser: argparse.ArgumentParser):
+        """
+        Adds corresponding command-line arguments for this class to the given parser.
+        """
+        for f in dataclasses.fields(cls):
+            arg_options: Dict[str, Any] = {
+                "type": f.type,
+            }
+            if f.default is dataclasses.MISSING:
+                arg_options["required"] = True
+            else:
+                arg_options["default"] = f.default
+            parser.add_argument(f"--{f.name}", **arg_options)
+
+    @classmethod
+    def from_args(cls, args: argparse.Namespace):
+        """Creates an instance of this class from the results of `parser.parse_args()`"""
+        constructor_args = {}
+        field_names = {f.name for f in dataclasses.fields(cls)}
+        for arg_name, arg_value in vars(args).items():
+            if arg_name in field_names:
+                constructor_args[arg_name] = arg_value
+        return cls(**constructor_args)
+
+    @classmethod
+    def read_from_command_line(cls):
+        parser = argparse.ArgumentParser()
+        cls.add_cmd_args(parser)
+        args = parser.parse_args()
+        return cls.from_args(args)
+    
+
+
 @dataclass
 class HyperParams(AutoTrackable, JsonSerializable):
     """
@@ -148,3 +188,4 @@ class HyperParams(AutoTrackable, JsonSerializable):
 
     def __str__(self):
         return str(self.asdict())
+

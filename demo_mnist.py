@@ -4,7 +4,7 @@ import tensorflow_datasets as tfds
 from tensorflow.keras import layers
 
 import blurred_gan
-from blurred_gan import WGANGP, TrainingConfig, BlurredGAN
+from blurred_gan import WGANGP, TrainingConfig, BlurredWGANGP
 import callbacks
 
 from tensorboard.plugins.hparams import api as hp
@@ -97,8 +97,17 @@ if __name__ == "__main__":
     epochs = 10
     batch_size_per_gpu = 32
 
-   
+    import argparse
+    parser = argparse.ArgumentParser()
+    BlurredWGANGP.HyperParameters.add_cmd_args(parser)
+    TrainingConfig.add_cmd_args(parser)
+    args = parser.parse_args()
+    hyperparameters = BlurredWGANGP.HyperParameters.from_args(args)
+    train_config = TrainingConfig.from_args(args)
     
+    print(hyperparameters)
+    print(train_config)
+
     num_gpus = 1 #strategy.num_replicas_in_sync
     print("Num gpus:", num_gpus)
 
@@ -123,7 +132,7 @@ if __name__ == "__main__":
         checkpoint_dir=checkpoint_dir,
         save_image_summaries_interval=50,
     )
-    hyperparameters = BlurredGAN.HyperParameters(
+    hyperparameters = BlurredWGANGP.HyperParameters(
         d_steps_per_g_step=1,
         gp_coefficient=10.0,
         learning_rate=0.001,
@@ -148,7 +157,7 @@ if __name__ == "__main__":
     if manager.latest_checkpoint:
         status = checkpoint.restore(manager.latest_checkpoint)
         status.assert_existing_objects_matched()
-        gan.hparams = BlurredGAN.HyperParameters.from_json(hparams_file_path)
+        gan.hparams = BlurredWGANGP.HyperParameters.from_json(hparams_file_path)
         gan.config = TrainingConfig.from_json(train_config_file_path)
         print("Loaded model weights from previous checkpoint:", checkpoint)
         print(f"Model was previously trained on {gan.n_img.numpy()} images")
@@ -177,16 +186,16 @@ if __name__ == "__main__":
     ]
 
 
-    tensorboard_cb = tf.keras.callbacks.TensorBoard(
-        log_dir=log_dir,
-        update_freq=100,
-        profile_batch=0, # BUG: profile_batch=0 was put there to fix Tensorboard not updating correctly. 
-    )
-    tensorboard_cb._samples_seen = gan.n_img.numpy()
-    tensorboard_cb._samples_seen_at_last_write = tensorboard_cb._samples_seen
-    tensorboard_cb._current_batch = gan.n_batches.numpy()
-    tensorboard_cb._total_batches_seen = gan.n_batches.numpy()
-    tensorboard_cb._total_val_batches_seen = 0
+    # tensorboard_cb = tf.keras.callbacks.TensorBoard(
+    #     log_dir=log_dir,
+    #     update_freq=100,
+    #     profile_batch=0, # BUG: profile_batch=0 was put there to fix Tensorboard not updating correctly. 
+    # )
+    # tensorboard_cb._samples_seen = gan.n_img.numpy()
+    # tensorboard_cb._samples_seen_at_last_write = tensorboard_cb._samples_seen
+    # tensorboard_cb._current_batch = gan.n_batches.numpy()
+    # tensorboard_cb._total_batches_seen = gan.n_batches.numpy()
+    # tensorboard_cb._total_val_batches_seen = 0
 
     gan.fit(
         x=dataset,

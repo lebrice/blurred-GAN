@@ -8,31 +8,32 @@ import os
 import json
 
 from gaussian_blur import GaussianBlur2D
-from utils import JsonSerializable
+from utils import JsonSerializable, ParseableFromCommandLine
 
 from contextlib import contextmanager
 
 
 @dataclass
-class TrainingConfig(JsonSerializable):
-    log_dir: str
-    checkpoint_dir: str
+class TrainingConfig(JsonSerializable, ParseableFromCommandLine):
+    log_dir: str = "results/log"
+    checkpoint_dir: str = "results/log/checkpoints"
     save_image_summaries_interval: int = 50
 
 
 class WGAN(tf.keras.Model):
     """
-    Wasserstein GAN   
+    Wasserstein GAN
     """
-        
+
+
     @dataclass
-    class HyperParameters(JsonSerializable):
+    class HyperParameters(JsonSerializable, ParseableFromCommandLine):
+        learning_rate: float = 0.001
         d_steps_per_g_step: int = 1
         batch_size: int = 32
         global_batch_size: int = 32
-        learning_rate: float = 0.001
         optimizer: str = "adam"
-    
+
 
     def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, hyperparams: HyperParameters, config: TrainingConfig, *args, **kwargs):
         """
@@ -250,7 +251,6 @@ class WGANGP(WGAN):
         return disc_loss
 
 def BlurredVariant(some_gan_base_class):
-        
     class BlurredGAN(some_gan_base_class):
         """
         IDEA: Simple variation on the WGAN-GP (or any GAN architecture, for that matter) where we added the blurring layer in the discriminator.

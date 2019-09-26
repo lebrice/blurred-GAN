@@ -4,7 +4,7 @@ import tensorflow_datasets as tfds
 from tensorflow.keras import layers
 
 import blurred_gan
-from blurred_gan import WGANGP, TrainingConfig, BlurredGAN
+from blurred_gan import WGANGP, TrainingConfig, BlurredWGANGP
 import callbacks
 
 from tensorboard.plugins.hparams import api as hp
@@ -157,7 +157,7 @@ if __name__ == "__main__":
         checkpoint_dir=checkpoint_dir,
         save_image_summaries_interval=50,
     )
-    hyperparameters = BlurredGAN.HyperParameters(
+    hyperparameters = BlurredWGANGP.HyperParameters(
         d_steps_per_g_step=1,
         gp_coefficient=10.0,
         learning_rate=0.001,
@@ -166,7 +166,7 @@ if __name__ == "__main__":
 
     gen = DCGANGenerator()
     disc = DCGANDiscriminator()
-    gan = blurred_gan.BlurredGAN(gen, disc, hyperparams=hyperparameters, config=train_config)
+    gan = blurred_gan.BlurredWGANGP(gen, disc, hyperparams=hyperparameters, config=train_config)
     
     checkpoint = tf.train.Checkpoint(gan=gan)    
     manager = tf.train.CheckpointManager(
@@ -179,7 +179,7 @@ if __name__ == "__main__":
     if manager.latest_checkpoint:
         status = checkpoint.restore(manager.latest_checkpoint)
         status.assert_existing_objects_matched()
-        gan.hparams = BlurredGAN.HyperParameters.from_json(log_dir + "/hyper_parameters.json")
+        gan.hparams = BlurredWGANGP.HyperParameters.from_json(log_dir + "/hyper_parameters.json")
         gan.config = TrainingConfig.from_json(log_dir + "/train_config.json")
         print("Loaded model weights from previous checkpoint:", checkpoint)
         print(f"Model was previously trained on {gan.n_img.numpy()} images")
