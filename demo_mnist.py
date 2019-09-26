@@ -111,8 +111,11 @@ if __name__ == "__main__":
 
     results_dir = "results"
 
-    resume_run_id = 2
-    log_dir = f"{results_dir}/{resume_run_id:02}-mnist"
+    resume_run_id = 1
+    if resume_run_id:
+        log_dir = f"{results_dir}/{resume_run_id:02}-mnist"
+    else:
+        log_dir = utils.create_result_subdir(results_dir, "mnist")
     checkpoint_dir = log_dir + "/checkpoints"
     
     train_config = TrainingConfig(
@@ -149,6 +152,7 @@ if __name__ == "__main__":
         gan.config = TrainingConfig.from_json(train_config_file_path)
         print("Loaded model weights from previous checkpoint:", checkpoint)
         print(f"Model was previously trained on {gan.n_img.numpy()} images")
+        tf.summary.experimental.set_step(gan.n_img)
     
     print("Hparams:", gan.hparams)
     print("Train config:", gan.config)
@@ -172,6 +176,18 @@ if __name__ == "__main__":
         ),
     ]
 
+
+    tensorboard_cb = tf.keras.callbacks.TensorBoard(
+        log_dir=log_dir,
+        update_freq=100,
+        profile_batch=0, # BUG: profile_batch=0 was put there to fix Tensorboard not updating correctly. 
+    )
+    tensorboard_cb._samples_seen = gan.n_img.numpy()
+    tensorboard_cb._samples_seen_at_last_write = tensorboard_cb._samples_seen
+    tensorboard_cb._current_batch = gan.n_batches.numpy()
+    tensorboard_cb._total_batches_seen = gan.n_batches.numpy()
+    tensorboard_cb._total_val_batches_seen = 0
+
     gan.fit(
         x=dataset,
         y=None,
@@ -183,11 +199,7 @@ if __name__ == "__main__":
             #     save_freq = (10_000//global_batch_size),
             #     save_weights_only=False,
             # ),
-            tf.keras.callbacks.TensorBoard(
-                log_dir=log_dir,
-                update_freq=100,
-                profile_batch=0, # BUG: profile_batch=0 was put there to fix Tensorboard not updating correctly. 
-            ), 
+            tensorboard_cb, 
             # log the hyperparameters used for this run
             hp.KerasCallback(log_dir, hyperparameters.asdict()),
 
