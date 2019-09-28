@@ -15,7 +15,7 @@ import dataclasses
 
 
 def make_dataset(shuffle_buffer_size=256) -> tf.data.Dataset:
-    """Modern Tensorflow input pipeline for the CelebA dataset"""
+    """Modern Tensorflow input pipeline for the MNIST dataset"""
 
     @tf.function
     def take_image(example):

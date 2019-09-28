@@ -135,70 +135,17 @@ class AdaptiveBlurController(tf.keras.callbacks.Callback):
             self.model.stop_training = True
 
 
-class SWDMetricCallback(ExecuteEveryNExamplesCallback):
+class FeedImagesToMetricCallback(ExecuteEveryNExamplesCallback):
     """
-    Accumulates examples during training and calculates the SWD between real and fake images periodically.
+    Accumulates examples during training and feeds it to a metric periodically.
     """
-    def __init__(self, image_preprocessing_fn, num_samples=1000, every_n_examples=10_000):
-        super().__init__(n=every_n_examples, starting_from=-num_samples)
-        self.num_samples = num_samples
-        self.image_preprocessing_fn = image_preprocessing_fn
-        self.recording = False
-        self.samples_recorded = 0
-
-        # we need the image size, which we get once trainign starts (on_train_begin below.)
-        self.swd_metric: metrics.SWDMetric
-
-    def on_train_begin(self, logs):
-        image_shape = self.model.discriminator.input_shape[1:]
-        self.swd_metric = metrics.SWDMetric(image_shape)
-    
-    def function(self, batch, logs):
-        self.recording = True
-    
-    def on_batch_end(self, batch: int, logs: Dict):
-        super().on_batch_end(batch, logs)
-        if self.recording:            
-            fakes, reals = self.model.images
-
-            # take only the number of examples we need.
-            # for example, if we already have 32 examples, and the metric function expects 50 examples (i.e, n is 50), we only take 18, rather than another 32.
-            batch_size: int = logs["size"]
-            num_examples_recorded = min(batch_size, self.num_samples - self.samples_recorded)
-            fakes = fakes[:num_examples_recorded]
-            reals = reals[:num_examples_recorded]
-            reals = self.image_preprocessing_fn(reals)
-            fakes = self.image_preprocessing_fn(fakes)
-            self.swd_metric.update_state(reals, fakes)
-
-            
-            self.samples_recorded += num_examples_recorded # add the batch size
-            if self.samples_recorded >= self.num_samples:
-                assert self.samples_recorded == self.num_samples
-
-                results = self.swd_metric.results()
-                print(" - " + " - ".join([f"{name}: {value:.4f}" for name, value in results.items()]))
-                with self.model.summary_writer.as_default():
-                    for name, value in results.items():
-                        tf.summary.scalar(f"swd/{name}", value)
-                # stop recording now.
-                self.recording = False
-                self.swd_metric.reset_states()
-                self.samples_recorded = 0
-
-
-
-class FIDMetricCallback(ExecuteEveryNExamplesCallback):
-    """
-    Accumulates examples during training and calculates the FID between real and fake images periodically.
-    """
-    def __init__(self, image_preprocessing_fn, num_samples=1000, every_n_examples=10_000):
+    def __init__(self, metric, image_preprocessing_fn, num_samples=1000, every_n_examples=10_000):
         super().__init__(n=every_n_examples, starting_from=-num_samples)
         self.num_samples_per_measurement = num_samples
         self.recording = False
         self.samples_recorded = 0
         self.image_preprocessing_fn = image_preprocessing_fn
-        self.metric = metrics.FIDMetric()       
+        self.metric = metric
     
     def function(self, batch, logs):
         self.recording = True
@@ -220,17 +167,43 @@ class FIDMetricCallback(ExecuteEveryNExamplesCallback):
             # feed in a minibatch of preprocessed reals and fakes to the metric.
             self.metric.update_state(reals, fakes)
             
-            self.samples_recorded += num_examples_to_record # add the batch size
+            self.samples_recorded += num_examples_to_record
             if self.samples_recorded >= self.num_samples_per_measurement:
                 assert self.samples_recorded == self.num_samples_per_measurement
-                result = self.metric.result()
-                with self.model.summary_writer.as_default():
-                    tf.summary.scalar(self.metric.name, result)
+                
+                self.write_result()
+                
                 # stop recording now.
                 self.recording = False
                 self.metric.reset_states()
                 self.samples_recorded = 0
 
+    def write_result(self):
+        result = self.metric.result()
+        with self.model.summary_writer.as_default():
+            tf.summary.scalar(self.metric.name, result)
+
+class SWDMetricCallback(FeedImagesToMetricCallback):
+    """
+    Accumulates examples during training and calculates the SWD between real and fake images periodically.
+    """
+    def __init__(self, image_preprocessing_fn, num_samples=1000, every_n_examples=10_000):
+        super().__init__(metrics.SWDMetric(), image_preprocessing_fn, num_samples=num_samples, every_n_examples=every_n_examples)
+
+    def write_result(self):
+        results = self.swd_metric.results()
+        print(" - " + " - ".join([f"{name}: {value:.4f}" for name, value in results.items()]))
+        with self.model.summary_writer.as_default():
+            for name, value in results.items():
+                tf.summary.scalar(f"swd/{name}", value)
+
+
+class FIDMetricCallback(FeedImagesToMetricCallback):
+    """
+    Accumulates examples during training and calculates the FID between real and fake images periodically.
+    """
+    def __init__(self, image_preprocessing_fn, num_samples=1000, every_n_examples=10_000):
+        super().__init__(metrics.FIDMetric(), image_preprocessing_fn, num_samples=num_samples, every_n_examples=every_n_examples)
 
 
 class GenerateSampleGridCallback(ExecuteEveryNExamplesCallback):

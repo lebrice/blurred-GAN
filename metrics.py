@@ -95,19 +95,12 @@ class SWDMetric():
     NOTE: Keras metrics execute in graph mode. at the moment, the code to calculate SWD is in numpy, and as such, we can't actually inherit from tf.keras.metrics.Metric.
     In the future, if this changes, then we should inherit from tf.keras.metrics.Metric. 
     """
-    def __init__(self, image_shape, name="SWDx1e3_avg", dtype=None):
+    def __init__(self, name="SWDx1e3_avg", dtype=None):
         self.nhood_size = 7
         self.nhoods_per_image = 128
         self.dir_repeats = 4
         self.dirs_per_repeat = 128
         self.resolutions = []
-        res = image_shape[1]
-        while res >= 16:
-            self.resolutions.append(res)
-            res //= 2
-
-        self.real_descriptors = [[] for res in self.resolutions]
-        self.fake_descriptors = [[] for res in self.resolutions]
 
     def get_metric_names(self):
         return ['SWDx1e3_%d' % res for res in self.resolutions] + ['SWDx1e3_avg']
@@ -122,6 +115,14 @@ class SWDMetric():
             d_list.clear()
 
     def update_state(self, real_minibatch, fake_minibatch, *args, **kwargs):
+        if len(self.resolutions) == 0:
+            res = real_minibatch.shape[1]
+            while res >= 16:
+                self.resolutions.append(res)
+                res //= 2
+            self.real_descriptors = [[] for res in self.resolutions]
+            self.fake_descriptors = [[] for res in self.resolutions]
+
         for lod, level in enumerate(sw.generate_laplacian_pyramid(real_minibatch, len(self.resolutions))):
             desc = sw.get_descriptors_for_minibatch(
                 level, self.nhood_size, self.nhoods_per_image)
