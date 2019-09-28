@@ -134,9 +134,24 @@ if __name__ == "__main__":
     epochs = 10
     batch_size_per_gpu = 32
 
-   
+    import argparse
+    parser = argparse.ArgumentParser()
 
-    num_gpus = 1 #strategy.num_replicas_in_sync
+    BlurredWGANGP.HyperParameters.add_cmd_args(parser)
+    TrainingConfig.add_cmd_args(parser)
+
+    args = parser.parse_args()
+    
+    hyperparameters = BlurredWGANGP.HyperParameters.from_args(args)
+    config = TrainingConfig.from_args(args)
+    
+    print(hyperparameters)
+    print(config)
+
+    # TODO: Make multi-GPU training work
+    # distribution_strategy = tf.distribute.MirroredStrategy()
+    distribution_strategy = tf.distribute.get_strategy()
+    num_gpus = distribution_strategy.num_replicas_in_sync
     print("Num gpus:", num_gpus)
 
     # Compute global batch size using number of replicas.
@@ -147,95 +162,78 @@ if __name__ == "__main__":
     steps_per_epoch = total_n_examples // global_batch_size
 
     results_dir = "results"
-
-    resume_run_id = 2
-    log_dir = f"{results_dir}/{resume_run_id:02}-celeba"
-    checkpoint_dir = log_dir + "/checkpoints"
-    
-    train_config = TrainingConfig(
-        log_dir=log_dir,
-        checkpoint_dir=checkpoint_dir,
-        save_image_summaries_interval=50,
-    )
-    hyperparameters = BlurredWGANGP.HyperParameters(
-        d_steps_per_g_step=1,
-        gp_coefficient=10.0,
-        learning_rate=0.001,
-        initial_blur_std=0.01 # effectively no blur
-    )
+    config.log_dir = utils.create_result_subdir(results_dir, "celeba")
+    config.checkpoint_dir = config.log_dir + "/checkpoints"    
 
     gen = DCGANGenerator()
     disc = DCGANDiscriminator()
-    gan = blurred_gan.BlurredWGANGP(gen, disc, hyperparams=hyperparameters, config=train_config)
+    gan = blurred_gan.BlurredWGANGP(gen, disc, hyperparams=hyperparameters, config=config)
     
     checkpoint = tf.train.Checkpoint(gan=gan)    
     manager = tf.train.CheckpointManager(
         checkpoint,
-        directory=checkpoint_dir,
+        directory=config.checkpoint_dir,
         max_to_keep=5,
         keep_checkpoint_every_n_hours=1
-    )    
-    
+    )
+
+    hparams_file_path = os.path.join(config.log_dir, "hyper_parameters.json")
+    train_config_file_path = os.path.join(config.log_dir, "train_config.json")
+
     if manager.latest_checkpoint:
         status = checkpoint.restore(manager.latest_checkpoint)
         status.assert_existing_objects_matched()
-        gan.hparams = BlurredWGANGP.HyperParameters.from_json(log_dir + "/hyper_parameters.json")
-        gan.config = TrainingConfig.from_json(log_dir + "/train_config.json")
+        gan.hparams = BlurredWGANGP.HyperParameters.from_json(hparams_file_path)
+        gan.config = TrainingConfig.from_json(train_config_file_path)
         print("Loaded model weights from previous checkpoint:", checkpoint)
         print(f"Model was previously trained on {gan.n_img.numpy()} images")
+        tf.summary.experimental.set_step(gan.n_img)
     
     print("Hparams:", gan.hparams)
     print("Train config:", gan.config)
 
-    gan.hparams.save_json(log_dir + "/hyper_parameters.json")
-    gan.config.save_json(log_dir + "/train_config.json")
+    gan.hparams.save_json(hparams_file_path)
+    gan.config.save_json(train_config_file_path)
 
     # manager.save()
 
     metric_callbacks = [
-        callbacks.FIDScoreCallback(
-            image_preprocessing_fn=lambda img: tf.image.grayscale_to_rgb(tf.image.resize(img, [299, 299])),
-            dataset_fn=make_dataset,
+        callbacks.FIDMetricCallback(
+            image_preprocessing_fn=lambda img: tf.image.resize(img, [299, 299]),
             num_samples=100,
-            every_n_examples=10_000,
+            every_n_examples=50_000,
         ),
-        callbacks.SWDCallback(
-            image_preprocessing_fn=lambda img: utils.NHWC_to_NCHW(tf.image.grayscale_to_rgb(tf.convert_to_tensor(img))),
+        callbacks.SWDMetricCallback(
+            image_preprocessing_fn=lambda img: utils.NHWC_to_NCHW(tf.convert_to_tensor(img)),
             num_samples=1000,
-            every_n_examples=10_000,
+            every_n_examples=50_000,
         ),
     ]
 
-    gan.fit(
-        x=dataset,
-        y=None,
-        epochs=epochs,
-        initial_epoch=gan.n_img // total_n_examples,
-        callbacks=[
-            tf.keras.callbacks.TensorBoard(
-                log_dir=log_dir,
-                update_freq=100,
-                profile_batch=0, # BUG: profile_batch=0 was put there to fix Tensorboard not updating correctly. 
-            ),
-            # log the hyperparameters used for this run
-            hp.KerasCallback(log_dir, hyperparameters.asdict()),
-
-            # generate a grid of samples
-            callbacks.GenerateSampleGridCallback(log_dir=log_dir, every_n_examples=5_000),
-
-            # # FIXME: these controllers need to be cleaned up a tiny bit.
-            # AdaptiveBlurController(max_value=hyperparameters.initial_blur_std),
-            # BlurDecayController(total_n_training_examples=steps_per_epoch * epochs, max_value=hyperparameters.initial_blur_std),
-            
-            # heavy metric callbacks
-            # *metric_callbacks,
-
-            callbacks.SaveModelCallback(manager, n=10_000),
-        ]
-    )
-
+    try:
+        gan.fit(
+            x=dataset,
+            y=None,
+            epochs=epochs,
+            initial_epoch=gan.n_img // total_n_examples,
+            callbacks=[
+                # log the hyperparameters used for this run
+                hp.KerasCallback(config.log_dir, hyperparameters.asdict()),
+                # generate a grid of samples
+                callbacks.GenerateSampleGridCallback(log_dir=config.log_dir, every_n_examples=5_000),
+                # # FIXME: these controllers need to be cleaned up a tiny bit.
+                # AdaptiveBlurController(max_value=hyperparameters.initial_blur_std),
+                callbacks.BlurDecayController(total_n_training_examples=total_n_examples * epochs, max_value=5),
+                
+                # heavy metric callbacks
+                *metric_callbacks,
+                callbacks.SaveModelCallback(manager, n=10_000),
+                callbacks.LogMetricsCallback()
+            ]
+        )
+    except KeyboardInterrupt:
+        manager.save()
     # Save the model
-    manager.save()
     print("Done training.")
 
 

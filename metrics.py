@@ -11,6 +11,8 @@ from typing import *
 
 import sliced_wasserstein as sw
 import utils
+import tensorflow_hub as hub
+
 
 def calculate_fid(x: np.ndarray, y: np.ndarray) -> float:
     import scipy
@@ -77,12 +79,12 @@ def evaluate_fid(reals: np.ndarray, fakes: np.ndarray, feature_extractor: tf.ker
     # assert reals.shape == fakes.shape, "shapes should match"
     # assert feature_extractor.input_shape[1:] == reals.shape[1:], "feature extractor's input doesn't match the provided data's shapes."
 
-    reals = utils.to_dataset(reals).batch(batch_size)
-    real_features = feature_extractor.predict(reals)
+    # reals = utils.to_dataset(reals).batch(batch_size)
+    real_features = feature_extractor(reals)
     del reals  # save some memory maybe?
 
-    fakes = utils.to_dataset(fakes).batch(batch_size)
-    fake_features = feature_extractor.predict(fakes)
+    # fakes = utils.to_dataset(fakes).batch(batch_size)
+    fake_features = feature_extractor(fakes)
     del fakes
 
     return calculate_fid_safe(real_features, fake_features)
@@ -93,7 +95,6 @@ class SWDMetric():
     NOTE: Keras metrics execute in graph mode. at the moment, the code to calculate SWD is in numpy, and as such, we can't actually inherit from tf.keras.metrics.Metric.
     In the future, if this changes, then we should inherit from tf.keras.metrics.Metric. 
     """
-
     def __init__(self, image_shape, name="SWDx1e3_avg", dtype=None):
         self.nhood_size = 7
         self.nhoods_per_image = 128
@@ -154,6 +155,32 @@ class SWDMetric():
         average_swd_key = self.get_metric_names()[-1]
         return results[average_swd_key]
 
+
+class FIDMetric():
+    """
+    NOTE: Keras metrics execute in graph mode. At the moment, the code to calculate FID is in numpy, and as such, we can't actually inherit from tf.keras.metrics.Metric.
+    In the future, if this changes, then we should inherit from tf.keras.metrics.Metric. 
+    """
+    def __init__(self, name="FID"):
+        self.name = name
+        self.reals: List[np.ndarray] = []
+        self.fakes: List[np.ndarray] = []
+        self.model_url = "https://tfhub.dev/google/tf2-preview/inception_v3/feature_vector/4"
+        self.feature_extractor = hub.KerasLayer(self.model_url, output_shape=[2048], trainable=False)
+    
+    def update_state(self, real_minibatch, fake_minibatch, *args, **kwargs):
+        self.reals.append(real_minibatch)
+        self.fakes.append(fake_minibatch)
+
+    def reset_states(self):
+        self.reals.clear()
+        self.fakes.clear()
+    
+    def result(self):
+        reals = tf.concat(self.reals, axis=0)
+        fakes = tf.concat(self.fakes, axis=0)
+        fid = evaluate_fid(reals, fakes, self.feature_extractor)
+        return fid
 
 # a1 = tf.random.normal((32, 28, 28, 3))
 # a2 = tf.random.normal((32, 28, 28, 3))

@@ -135,38 +135,7 @@ class AdaptiveBlurController(tf.keras.callbacks.Callback):
             self.model.stop_training = True
 
 
-class FIDScoreCallback(ExecuteEveryNExamplesCallback):
-    """
-    Calculate the FID score after every epoch. 
-    """
-    def __init__(self, image_preprocessing_fn: Callable[[tf.Tensor], tf.Tensor], dataset_fn: Callable[[], tf.data.Dataset], num_samples=1000, every_n_examples=10_000,):
-        super().__init__(every_n_examples)
-        self.image_preprocessing_fn = image_preprocessing_fn
-        self.make_dataset = dataset_fn
-        self.num_samples = num_samples
-
-        self.real_samples = self.make_dataset().shuffle(1000).repeat()
-
-        self.model_url = "https://tfhub.dev/google/tf2-preview/inception_v3/feature_vector/4"
-        self.feature_extractor = tf.keras.Sequential([
-            tf.keras.layers.Lambda(self.image_preprocessing_fn),
-            hub.KerasLayer(self.model_url, output_shape=[2048], trainable=False),
-        ])
-    
-    def function(self, batch, logs):
-        self.fid_score()
-
-    def fid_score(self, *args) -> None:
-        reals = self.real_samples.take(self.n)
-        fakes = self.model.generator.predict(tf.random.uniform(
-            (self.n, self.model.generator.input_shape[-1])))
-        fid = metrics.evaluate_fid(reals, fakes, self.feature_extractor)
-        with self.model.summary_writer.as_default():
-            tf.summary.scalar("fid_score", fid)
-        print(f"- FID: {fid:.4f}")
-
-
-class SWDCallback(ExecuteEveryNExamplesCallback):
+class SWDMetricCallback(ExecuteEveryNExamplesCallback):
     """
     Accumulates examples during training and calculates the SWD between real and fake images periodically.
     """
@@ -174,7 +143,7 @@ class SWDCallback(ExecuteEveryNExamplesCallback):
         super().__init__(n=every_n_examples, starting_from=-num_samples)
         self.num_samples = num_samples
         self.image_preprocessing_fn = image_preprocessing_fn
-        self.recording = False # hack to do a first run for t=0.
+        self.recording = False
         self.samples_recorded = 0
 
         # we need the image size, which we get once trainign starts (on_train_begin below.)
@@ -190,7 +159,7 @@ class SWDCallback(ExecuteEveryNExamplesCallback):
     def on_batch_end(self, batch: int, logs: Dict):
         super().on_batch_end(batch, logs)
         if self.recording:            
-            fakes, reals, blurred_fakes, blurred_reals = self.model.images
+            fakes, reals = self.model.images
 
             # take only the number of examples we need.
             # for example, if we already have 32 examples, and the metric function expects 50 examples (i.e, n is 50), we only take 18, rather than another 32.
@@ -216,6 +185,52 @@ class SWDCallback(ExecuteEveryNExamplesCallback):
                 self.recording = False
                 self.swd_metric.reset_states()
                 self.samples_recorded = 0
+
+
+
+class FIDMetricCallback(ExecuteEveryNExamplesCallback):
+    """
+    Accumulates examples during training and calculates the FID between real and fake images periodically.
+    """
+    def __init__(self, image_preprocessing_fn, num_samples=1000, every_n_examples=10_000):
+        super().__init__(n=every_n_examples, starting_from=-num_samples)
+        self.num_samples_per_measurement = num_samples
+        self.recording = False
+        self.samples_recorded = 0
+        self.image_preprocessing_fn = image_preprocessing_fn
+        self.metric = metrics.FIDMetric()       
+    
+    def function(self, batch, logs):
+        self.recording = True
+    
+    def on_batch_end(self, batch: int, logs: Dict):
+        super().on_batch_end(batch, logs)
+
+        if self.recording:            
+            fakes, reals = self.model.images
+
+            # take only the number of examples we need.
+            # for example, if we already have 32 examples, and the metric function expects 50 examples (i.e, n is 50), we only take 18, rather than another 32.
+            batch_size: int = logs["size"]
+            num_examples_to_record = min(batch_size, self.num_samples_per_measurement - self.samples_recorded)
+            fakes = fakes[:num_examples_to_record]
+            reals = reals[:num_examples_to_record]
+            fakes = self.image_preprocessing_fn(fakes)
+            reals = self.image_preprocessing_fn(reals)
+            # feed in a minibatch of preprocessed reals and fakes to the metric.
+            self.metric.update_state(reals, fakes)
+            
+            self.samples_recorded += num_examples_to_record # add the batch size
+            if self.samples_recorded >= self.num_samples_per_measurement:
+                assert self.samples_recorded == self.num_samples_per_measurement
+                result = self.metric.result()
+                with self.model.summary_writer.as_default():
+                    tf.summary.scalar(self.metric.name, result)
+                # stop recording now.
+                self.recording = False
+                self.metric.reset_states()
+                self.samples_recorded = 0
+
 
 
 class GenerateSampleGridCallback(ExecuteEveryNExamplesCallback):
@@ -258,4 +273,24 @@ class SaveModelCallback(ExecuteEveryNExamplesCallback):
         self.manager.save(self.samples_seen)
 
 
+class LogMetricsCallback(ExecuteEveryNExamplesCallback):
+    def __init__(self, every_n_examples: int = 100):
+        super().__init__(n=every_n_examples)
+
+    def on_train_begin(self, logs):
+        self.samples_seen = self.model.n_img.numpy()
+
+    def function(self, batch: int, logs: Dict):
+        self.write_metric_summaries(logs, prefix="batch_")
+
+    def on_epoch_end(self, epoch: int, logs: Dict):
+        self.write_metric_summaries(logs, prefix="epoch_")
+
+    def write_metric_summaries(self, logs: Dict, prefix="", flush=False):
+        with self.model.summary_writer.as_default():
+            for name, value in logs.items():
+                if name not in ("batch", "size"):
+                    tf.summary.scalar(f"{prefix}{name}", value)
+            if flush:
+                self.model.summary_writer.flush()
 
