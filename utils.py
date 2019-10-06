@@ -130,7 +130,7 @@ class JsonSerializable():
     @classmethod
     def from_json(cls, file_path: str):
         d = read_json(file_path)
-        return cls(**d)
+        return cls(**d) #type: ignore
 
 
 class ParseableFromCommandLine:
@@ -202,9 +202,10 @@ class ParseableFromCommandLine:
     def from_args_multiple(cls, args: argparse.Namespace, num_instances_to_parse: int) -> List[object]:
         """Parses multiple instances of this class from the command line, and returns them.
         Each argument may have either 0 values (when applicable), 1, or {num_instances_to_parse}. 
+        NOTE: If only one value is provided, every instance will be populated with the same value.
 
         Arguments:
-            args {argparse.Namespace} -- The result of a call to `parser.parse_args()`
+            args {argparse.Namespace} -- The
             num_instances_to_parse {int} -- Number of instances that are to be created from the given parsedarguments
         
         Raises:
