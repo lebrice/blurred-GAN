@@ -12,7 +12,8 @@ import json
 from contextlib import contextmanager
 
 from gaussian_blur import GaussianBlur2D
-from utils import JsonSerializable, ParseableFromCommandLine
+from simple_parsing import ParseableFromCommandLine
+from utils import JsonSerializable
 
 
 @dataclass
@@ -30,13 +31,16 @@ class WGAN(tf.keras.Model):
 
     @dataclass
     class HyperParameters(JsonSerializable, ParseableFromCommandLine):
+        """
+        Dataclass containing the hyperparameters of the Model
+        """
         learning_rate: float = 0.001
         d_steps_per_g_step: int = 1
         batch_size: int = 32
         global_batch_size: int = 32
         optimizer: str = "adam"
 
-
+    
     def __init__(self, generator: tf.keras.Model, discriminator: tf.keras.Model, hyperparams: HyperParameters, config: TrainingConfig, *args, **kwargs):
         """
         Creates the GAN, using the given `generator` and `discriminator` models.
@@ -73,6 +77,7 @@ class WGAN(tf.keras.Model):
         # BUG: for some reason, a model needs a non-None value for the 'optimizer' attribute before it can be trained with the .fit method.
         self.optimizer = "unused"
 
+        self.strategy: tf.distribute.DistributionStrategy = tf.distribute.get_strategy()
     
     def latents_batch(self):
         assert self.batch_size is not None
@@ -85,7 +90,7 @@ class WGAN(tf.keras.Model):
 
     @tf.function
     def discriminator_loss(self, reals, fakes, real_scores, fake_scores):
-        return tf.reduce_mean(fake_scores - real_scores)
+        return tf.reduce_sum(fake_scores - real_scores) * (1. / self.hparams.global_batch_size)
 
     @tf.function
     def discriminator_step(self, reals):
@@ -98,9 +103,9 @@ class WGAN(tf.keras.Model):
         discriminator_grads = disc_tape.gradient(disc_loss, self.discriminator.trainable_variables)
         self.discriminator.optimizer.apply_gradients(zip(discriminator_grads, self.discriminator.trainable_variables))
         # save metrics.
-        self.fake_scores_metric(fake_scores)
-        self.real_scores_metric(real_scores)
-        self.disc_loss_metric(disc_loss)
+        # self.fake_scores_metric(fake_scores)
+        # self.real_scores_metric(real_scores)
+        # self.disc_loss_metric(disc_loss)
 
         # images to be added as a summary
         # BUG: Currently, it seems like we can't have image summaries inside a tf.function (graph). (not thoroughly tested this yet.)
@@ -110,7 +115,7 @@ class WGAN(tf.keras.Model):
 
     @tf.function
     def generator_loss(self, fake_scores):
-        return - tf.reduce_mean(fake_scores)
+        return - tf.reduce_sum(fake_scores) * (1. / self.hparams.global_batch_size)
 
     @tf.function
     def generator_step(self):
@@ -123,26 +128,24 @@ class WGAN(tf.keras.Model):
         self.generator.optimizer.apply_gradients(zip(generator_grads, self.generator.trainable_variables))
         
         # save metrics.
-        self.fake_scores_metric(fake_scores)
-        self.gen_loss_metric(gen_loss)
+        # self.fake_scores_metric(fake_scores)
+        # self.gen_loss_metric(gen_loss)
         return gen_loss
 
     # @tf.function
     def train_on_batch(self, reals, *args, **kwargs):
         self.reset_metrics()
+        # NOTE: by default keras resets the metrics only after each epoch:
         # if kwargs.get("reset_metrics"):
         #     print("resetting metrics")
         #     self.reset_metrics()
 
         self.batch_size = reals.shape[0]
         tf.summary.experimental.set_step(self.n_img)
-        # TODO: Wrap this with summary_writer.as_default() when we should keep
-        # the summaries and with a no_op contextmanager when we shouldn't.
-        # (ALSO test if the summaries are written when in the discriminator step
-        # is executed in graph mode.)
+
         disc_loss, images = self.discriminator_step(reals)
         self.images = images
-
+        
         if tf.equal(self.n_batches % self.d_steps_per_g_step, 0):
             self.generator_step()
         

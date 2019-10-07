@@ -137,8 +137,8 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
 
-    BlurredWGANGP.HyperParameters.add_cmd_args(parser)
-    TrainingConfig.add_cmd_args(parser)
+    BlurredWGANGP.HyperParameters.add_arguments(parser)
+    TrainingConfig.add_arguments(parser)
 
     args = parser.parse_args()
     

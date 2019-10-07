@@ -35,8 +35,8 @@ def make_dataset(shuffle_buffer_size=256) -> tf.data.Dataset:
 
     dataset = (dataset
         .map(take_image)
-        .batch(16)  # make preprocessing faster by batching inputs.
-        .map(preprocess_images)
+        .batch(32)  # make preprocessing faster by batching inputs.
+        .map(preprocess_images, num_parallel_calls=tf.data.experimental.AUTOTUNE)
         .unbatch()
         .cache()
         .shuffle(shuffle_buffer_size)
@@ -101,8 +101,9 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
 
-    BlurredWGANGP.HyperParameters.add_cmd_args(parser)
-    TrainingConfig.add_cmd_args(parser)
+    BlurredWGANGP.HyperParameters.add_arguments(parser)
+    TrainingConfig.add_arguments(parser)
+    # BlurredWGANGP.HyperParameters.add_cmd_args(parser)
 
     args = parser.parse_args()
     
@@ -133,10 +134,13 @@ if __name__ == "__main__":
         config.log_dir = utils.create_result_subdir(results_dir, "mnist")
     config.checkpoint_dir = config.log_dir + "/checkpoints"
     
+    # strategy = tf.distribute.MirroredStrategy()
+    strategy = tf.distribute.get_strategy()
+    with strategy.scope():
 
-    gen = DCGANGenerator()
-    disc = DCGANDiscriminator()
-    gan = blurred_gan.BlurredWGANGP(gen, disc, hyperparams=hyperparameters, config=config)
+        gen = DCGANGenerator()
+        disc = DCGANDiscriminator()
+        gan = blurred_gan.BlurredWGANGP(gen, disc, hyperparams=hyperparameters, config=config)
     
     checkpoint = tf.train.Checkpoint(gan=gan)    
     manager = tf.train.CheckpointManager(
