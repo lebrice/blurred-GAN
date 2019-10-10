@@ -99,7 +99,7 @@ if __name__ == "__main__":
     batch_size_per_gpu = 32
 
     import argparse
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 
     BlurredWGANGP.HyperParameters.add_arguments(parser)
     TrainingConfig.add_arguments(parser)
@@ -196,10 +196,10 @@ if __name__ == "__main__":
                 callbacks.GenerateSampleGridCallback(log_dir=config.log_dir, every_n_examples=5_000),
                 # # FIXME: these controllers need to be cleaned up a tiny bit.
                 # AdaptiveBlurController(max_value=hyperparameters.initial_blur_std),
-                callbacks.BlurDecayController(total_n_training_examples=total_n_examples * epochs, max_value=5),
+                callbacks.BlurDecayController(total_n_training_examples=total_n_examples * epochs, max_value=hyperparameters.initial_blur_std),
                 
                 # heavy metric callbacks
-                *metric_callbacks,
+                # *metric_callbacks,
                 callbacks.SaveModelCallback(manager, n=10_000),
                 callbacks.LogMetricsCallback(),
             ]

@@ -18,6 +18,8 @@ from utils import JsonSerializable
 
 @dataclass
 class TrainingConfig(JsonSerializable, ParseableFromCommandLine):
+    """Parameters related to the training configuration of the Model
+    """
     log_dir: str = "results/log"
     checkpoint_dir: str = "results/log/checkpoints"
     save_image_summaries_interval: int = 50
@@ -68,6 +70,8 @@ class WGAN(tf.keras.Model):
         self.n_img = tf.Variable(0, dtype=tf.int64, trainable=False, name="n_img")
         self.n_batches = tf.Variable(0, dtype=tf.int64, trainable=False, name="n_batches")
         
+
+        # *Metrics
         # Keras metrics to be showed during training.
         self.real_scores_metric = tf.keras.metrics.Mean("real_scores", dtype=tf.float32)
         self.fake_scores_metric = tf.keras.metrics.Mean("fake_scores", dtype=tf.float32)
@@ -79,6 +83,36 @@ class WGAN(tf.keras.Model):
 
         self.strategy: tf.distribute.DistributionStrategy = tf.distribute.get_strategy()
     
+    def train_on_batch(self, reals, *args, **kwargs):
+        """Trains the GAN on a batch of real data.
+        NOTE: By implementing thEnables us to use the Keras model.fit(...) api. This works, but not everything is perfectly supported yet.
+        TODO: Distributed training with tf.distribute.DistributionStrategy 
+        
+        Arguments:
+            reals {tf.Tensor} -- A batch of real images.
+        
+        Returns:
+            List[float] -- The list of metric values.  
+        """
+        self.reset_metrics()
+
+        self.batch_size = reals.shape[0]
+        tf.summary.experimental.set_step(self.n_img)
+
+        
+        disc_loss, self.images = self.discriminator_step(reals)
+        
+        if tf.equal(self.n_batches % self.d_steps_per_g_step, 0):
+            self.generator_step()
+        
+        self.log_image_summaries()
+
+        batch_size = reals.shape[0]
+        self.n_img.assign_add(batch_size)
+        self.n_batches.assign_add(1)
+
+        return self._organize_metrics()
+
     def latents_batch(self):
         assert self.batch_size is not None
         return tf.random.uniform([self.batch_size, self.generator.input_shape[-1]])
@@ -87,6 +121,9 @@ class WGAN(tf.keras.Model):
         if latents is None:
             latents = self.latents_batch()
         return self.generator(latents, training=training)
+
+
+    ### DISCRIMINATOR
 
     @tf.function
     def discriminator_loss(self, reals, fakes, real_scores, fake_scores):
@@ -103,15 +140,17 @@ class WGAN(tf.keras.Model):
         discriminator_grads = disc_tape.gradient(disc_loss, self.discriminator.trainable_variables)
         self.discriminator.optimizer.apply_gradients(zip(discriminator_grads, self.discriminator.trainable_variables))
         # save metrics.
-        # self.fake_scores_metric(fake_scores)
-        # self.real_scores_metric(real_scores)
-        # self.disc_loss_metric(disc_loss)
+        self.fake_scores_metric(fake_scores)
+        self.real_scores_metric(real_scores)
+        self.disc_loss_metric(disc_loss)
 
         # images to be added as a summary
         # BUG: Currently, it seems like we can't have image summaries inside a tf.function (graph). (not thoroughly tested this yet.)
         # hence we pass the images outside of this 'graphified' function.
         images = (fakes, reals)
         return disc_loss, images
+
+    ### GENERATOR
 
     @tf.function
     def generator_loss(self, fake_scores):
@@ -128,48 +167,38 @@ class WGAN(tf.keras.Model):
         self.generator.optimizer.apply_gradients(zip(generator_grads, self.generator.trainable_variables))
         
         # save metrics.
-        # self.fake_scores_metric(fake_scores)
-        # self.gen_loss_metric(gen_loss)
+        self.fake_scores_metric(fake_scores)
+        self.gen_loss_metric(gen_loss)
         return gen_loss
 
-    # @tf.function
-    def train_on_batch(self, reals, *args, **kwargs):
-        self.reset_metrics()
-        # NOTE: by default keras resets the metrics only after each epoch:
-        # if kwargs.get("reset_metrics"):
-        #     print("resetting metrics")
-        #     self.reset_metrics()
 
-        self.batch_size = reals.shape[0]
-        tf.summary.experimental.set_step(self.n_img)
-
-        disc_loss, images = self.discriminator_step(reals)
-        self.images = images
-        
-        if tf.equal(self.n_batches % self.d_steps_per_g_step, 0):
-            self.generator_step()
-        
-        self.log_image_summaries()
-
-        batch_size = reals.shape[0]
-        self.n_img.assign_add(batch_size)
-        self.n_batches.assign_add(1)
-
-        #BUG: the order of metrics in the `metrics` attribute is not the same as in the `metrics_names` attribute.
-        # the first value in the returned list should be the 'loss'
-        metric_results = [0] # some dummy 'loss', which doesn't apply here.
-        for metric_name in self.metrics_names[1:]:
-            result = [m.result() for m in self.metrics if m.name == metric_name]
-            assert len(result) == 1, "duplicate metric names"
-            metric_results += result
-        return metric_results
 
     def log_image_summaries(self):
         with self.record_image_summaries():
             fakes, reals = self.images
             tf.summary.image("fakes", fakes)
             tf.summary.image("reals", reals)
-    
+
+    def _organize_metrics(self) -> List[float]:
+        """Organises the metrics after a batch of training.
+        NOTE: this is needed because of the fact that we use a subclassed model,
+        hence we need to do a tiny bit of work to conform to the normal `model.fit` API.
+
+        Returns:
+            List[float] -- the list of `metric.result()`s needed by the model.fit(...) api.
+        """
+        #BUG: the order of metrics in the `metrics` attribute is not the same as in the `metrics_names` attribute.
+        # the first value in the returned list should be the 'loss'
+        def get_metric_with_name(name: str) -> tf.keras.metrics.Metric:
+            metrics_with_that_name = [m for m in self.metrics if m.name == name]
+            assert len(metrics_with_that_name) == 1, f"duplicate metrics with name '{name}'"
+            return metrics_with_that_name[0]
+
+        # sort the metrics in self.metrics in the same order as they appear in self.metrics_names
+        # the 'Loss' metric is useless for us (as we don't have a single loss), hence we set its value to 0.0
+        metrics = [get_metric_with_name(name) for name in self.metrics_names if name != "loss"]
+        return [0.0] + [m.result() for m in metrics]
+
     def summary(self):
         print("Discriminator:")
         self.discriminator.summary()
